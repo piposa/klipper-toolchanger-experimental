@@ -9,8 +9,9 @@ TODO: add image.
 
 ```
 [rounded_path]
-resolution: 0.2 # the length of a circle approximation segments.
-replace_g0: False # Use at your own risk
+resolution: >0 [1] # the length of a circle approximation segments.
+replace_g0: True/False   [False] # Use at your own risk
+algorithm: fillet/bezier [fillet] # algorithm for curves/path rounding
 ```
 
 # Gcodes

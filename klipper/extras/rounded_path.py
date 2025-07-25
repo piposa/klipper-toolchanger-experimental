@@ -345,7 +345,7 @@ class _Bezier:
         yvals = np.dot(yPoints, polynomial_array)
         zvals = np.dot(zPoints, polynomial_array)
 
-        return np.transpose([xvals, yvals, zvals])
+        return np.transpose([xvals, yvals, zvals]).tolist()
 
 
 def load_config(config):

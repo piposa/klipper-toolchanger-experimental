@@ -78,9 +78,11 @@ class ToolProbeEndstop:
         if self.active_probe:
             self.mcu_probe.set_active_mcu(tool_probe.mcu_probe)
             self.active_tool_number = self.active_probe.tool
+            self.cmd_helper.name = self.active_probe.name
         else:
             self.mcu_probe.set_active_mcu(None)
             self.active_tool_number = -1
+            self.cmd_helper.name = self.name
 
     def _query_open_tools(self):
         print_time = self.toolhead.get_last_move_time()
@@ -99,7 +101,7 @@ class ToolProbeEndstop:
         elif len(candidates) == 0:
             return "All probes triggered"
         else:
-            return  "Multiple probes not triggered: %s" % map(lambda p: p.name, candidates)
+            return f"Multiple probes not triggered: {[p.name for p in candidates]}"
 
     def _ensure_active_tool_or_fail(self, gcode):
         if self.active_probe:

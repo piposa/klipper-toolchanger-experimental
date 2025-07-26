@@ -87,17 +87,17 @@ def _vtransform(vec: list, transform: list) -> list:
             vec[0] * transform[6] + vec[1] * transform[7] + vec[2] * transform[8]]
 
 class RoundedPath:
+    _ALGO_MAP ={'fillet':   'fillet',  'bezier':  'bezier',
+               "'fillet'":  'fillet', "'bezier'": 'bezier'}
     buffer: list[ControlPoint]
-
     def __init__(self, config):
         self.printer = config.get_printer()
         self.mm_per_arc_segment = config.getfloat('resolution', 1., above=0.0)
-
-        algo_options = {'fillet': 'fillet', 'bezier': 'bezier'}
-        self.algorithm = config.getchoice('algorithm', algo_options, 'fillet')
+        self.algorithm          = config.getchoice('algorithm', self._ALGO_MAP, 'fillet')
+        self.reset_on_mismatch  = config.getboolean('reset_on_mismatch', False)
         if self.algorithm == 'bezier' and np is None:
-            raise config.error("rounded_path: algorithm: 'bezier' requires the 'numpy' to be installed.")
-        
+            raise config.error("Choice 'bezier' for option 'algorithm' in section 'rounded_path' requires 'numpy' to be installed." \
+                                "(install numpy or switch to fillet)")
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         self.gcode = self.printer.lookup_object('gcode')
         self.G0_params = {}
@@ -122,10 +122,12 @@ class RoundedPath:
         currentPos = gcodestatus['gcode_position']
         if len(self.buffer) == 0:
             # Initialize with currentPos and radius = 0.
-            self.buffer.append(ControlPoint(x= currentPos[0], y= currentPos[1], z=currentPos[2],d =0.0, f = 0.0))
+            self.buffer.append(ControlPoint(x = currentPos[0], y = currentPos[1], z = currentPos[2], d = 0.0, f = 0.0))
         else:
             origin = self.buffer[0].vec
             if _vdist(currentPos, origin) > EPSILON:
+                if self.reset_on_mismatch:
+                    self.buffer.clear()
                 raise gcmd.error("ROUNDED_G0 - current position changed since previous command, the last ROUNDED_G0 before other moves needs to be with D=0")
             last = self.buffer[-1]
             currentPos = last.vec

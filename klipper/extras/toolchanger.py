@@ -544,26 +544,29 @@ class Toolchanger:
     def _position_to_xyz(self, position, axis):
         result = {}
         for i in axis:
-            index = XYZ_TO_INDEX[i]
-            result[INDEX_TO_XYZ[index]] = position[index]
+            if i in XYZ_TO_INDEX:
+                index = XYZ_TO_INDEX[i]
+                result[INDEX_TO_XYZ[index]] = position[index]
         return result
 
     def _position_with_tool_offset(self, position, axis, tool, extra_z_offset=0.0):
         result = {}
         for i in axis:
-            index = XYZ_TO_INDEX[i]
-            v = position[index]
-            if tool:
-                offset = 0.
-                if index == 0:
-                    offset = tool.gcode_x_offset
-                elif index == 1:
-                    offset = tool.gcode_y_offset
-                elif index == 2:
-                    offset = tool.gcode_z_offset + extra_z_offset
-                v += offset
-            result[INDEX_TO_XYZ[index]] = v
+            if i in XYZ_TO_INDEX:
+                index = XYZ_TO_INDEX[i]
+                v = position[index]
+                if tool:
+                    offset = 0.
+                    if index == 0:
+                        offset = tool.gcode_x_offset
+                    elif index == 1:
+                        offset = tool.gcode_y_offset
+                    elif index == 2:
+                        offset = tool.gcode_z_offset + extra_z_offset
+                    v += offset
+                result[INDEX_TO_XYZ[index]] = v
         return result
+
 
     def _restore_axis(self, position, axis, tool):
         if not axis:

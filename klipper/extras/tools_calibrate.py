@@ -346,9 +346,11 @@ class ProbeEndstopWrapper:
         self.idex = config.has_section('dual_carriage') or config.has_section('dual_carriage u')
         # Create an "endstop" object to handle the probe pin
         ppins = self.printer.lookup_object('pins')
-        pin = config.get('pin')
-        ppins.allow_multi_use_pin(pin.replace('^', '').replace('!', ''))
-        pin_params = ppins.lookup_pin(pin, can_invert=True, can_pullup=True)
+        pin_name = config.get('pin')
+        base_pin_name = pin_name.lstrip('~!^')
+        ppins.allow_multi_use_pin(base_pin_name)
+        pin_params = ppins.lookup_pin(pin_name, can_invert=True, can_pullup=True)
+        self.invert_logic = ('!' in pin_name) ^ bool(pin_params['invert'])
         mcu = pin_params['chip']
         self.mcu_endstop = mcu.setup_pin('endstop', pin_params)
         self.printer.register_event_handler('klippy:mcu_identify',
@@ -357,9 +359,17 @@ class ProbeEndstopWrapper:
         self.get_mcu = self.mcu_endstop.get_mcu
         self.add_stepper = self.mcu_endstop.add_stepper
         self.get_steppers = self._get_steppers
-        self.home_start = self.mcu_endstop.home_start
         self.home_wait = self.mcu_endstop.home_wait
-        self.query_endstop = self.mcu_endstop.query_endstop
+
+    def home_start(self, print_time, sample_time, sample_count, rest_time, triggered=True):
+        if self.invert_logic:
+            triggered = not triggered
+        return self.mcu_endstop.home_start(
+            print_time, sample_time, sample_count, rest_time, triggered)
+
+    def query_endstop(self, print_time):
+        res = self.mcu_endstop.query_endstop(print_time)
+        return not res if self.invert_logic else res
 
     def _get_steppers(self):
         if self.idex and self.axis == 'x':

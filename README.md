@@ -1,33 +1,22 @@
-# klipper-toolchanger
+# klipper-toolchanger-experimental
 
-An assortment of Klipper extensions that I have made while working on [Tapchanger](https://github.com/viesturz/tapchanger)
+basically like the regular one just with some more features/fixes
 
 # Installation
 
 To install this plugin, run the installation script using the following command over SSH. This script will download this GitHub repository to your RaspberryPi home directory, and symlink the files in the Klipper extra folder.
 
 ```
-wget -O - https://raw.githubusercontent.com/viesturz/klipper-toolchanger/main/install.sh | bash
+wget -O - https://raw.githubusercontent.com/Contomo/klipper-toolchanger-experimental/main/install.sh | bash
 ```
 
-Then, add the following to your moonraker.conf to enable automatic updates:
-```
-[update_manager klipper-toolchanger]
-type: git_repo
-channel: dev
-path: ~/klipper-toolchanger
-origin: https://github.com/viesturz/klipper-toolchanger.git
-managed_services: klipper
-primary_branch: main
-```
-Add the [macros.cfg](/macros.cfg) to your printer config.
 
 ## Updates that add new files
 
 Note that if an update has new klipper files, they **will not** be automatically installed into Klipper.
 You will need to run the intall script manualy to add them:
 ```commandline
-bash ~/klipper-toolchanger/install.sh
+bash ~/klipper-toolchanger-experimental/install.sh
 ```
 
 # Components

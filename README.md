@@ -25,3 +25,4 @@ bash ~/klipper-toolchanger-experimental/install.sh
 * [Tool probe](/tool_probe.md) - per tool Z probe.
 * [Rounded path](/rounded_path.md) - rounds the travel path corners for fast non-print moves.
 * [Tools calibrate](/tools_calibrate.md) - support for contact based XYZ offset calibration probes.
+* [Heater_power_distributor](/heater_power_distributor.md) - dynamic heater group power limiting

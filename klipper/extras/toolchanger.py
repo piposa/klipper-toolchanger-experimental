@@ -785,10 +785,11 @@ def get_params_dict(config):
     for option in config.get_prefix_options('params_'):
         try:
             result[option] = ast.literal_eval(config.get(option))
-        except ValueError as e:
+        except (ValueError, SyntaxError) as e:
             raise config.error(
-                "Option '%s' in section '%s' is not a valid literal" % (
-                    option, config.get_name()))
+                "Option '%s' in section '%s' is not a valid literal: %s"
+                % (option, config.get_name(), str(e))
+            )
     return result
 
 

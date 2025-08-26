@@ -386,8 +386,9 @@ class Toolchanger:
             else:
                 gcmd.respond_info('Tool unselected')
             self.current_change_id = -1
-        except gcmd.error:
+        except gcmd.error as e:
             if self.status == STATUS_ERROR:
+                gcmd.respond_error(f"Toolchange Failure: {e}")
                 # The error handling did happen, we can continue
                 pass
             else:

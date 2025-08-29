@@ -1,6 +1,7 @@
 # klipper-toolchanger-experimental
 
-basically like the regular one just with some more features/fixes
+Aimed to be fully compatible with the original `klipper-toolchanger` while offering more features, extras, and options to expand upon.
+Basically, the "assortment of Klipper extensions" from viesturz, with the "assortment of Klipper extensions" from me.
 
 # Installation
 

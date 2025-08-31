@@ -156,6 +156,7 @@ class SensorlessAutoTune:
             raise gcmd.error("Pre-flight FAILED: sensorless did not trigger at max sensitivity; "
                              "check DIAG wiring and mechanics.")
         self.toolhead.wait_moves()
+        return abs(moved)
 
     # ---- G-code command ---------------------------------------------------
 
@@ -174,7 +175,6 @@ class SensorlessAutoTune:
         vmin, vmax = sgh.info['value_min'], sgh.info['value_max']
         most_sensitive, least_sensitive = (vmin, vmax) if more > 0 else (vmax, vmin)
 
-        min_move = gcmd.get_float('MIN_MOVE', 0.20, above=0.0)
         window   = gcmd.get_float('WINDOW',   0.60, minval=0.1)
         start    = gcmd.get_int('START', most_sensitive)
         stop     = gcmd.get_int('STOP',  least_sensitive)
@@ -188,7 +188,9 @@ class SensorlessAutoTune:
             raise gcmd.error("Invalid START/STOP ordering. Begin near most sensitive (%d) ⇒ sweep to %d."
                              % (most_sensitive, least_sensitive))
 
-        self._run_preflight_check(sgh, gcmd)
+        _min_move = self._run_preflight_check(sgh, gcmd)
+        min_move = gcmd.get_float('MIN_MOVE', _min_move + 0.5, above=0.0)
+
         gcmd.respond_info("[P1] Testing: %d\u2009>>>\u2009%d" % (start, stop))
 
         # -------- Phase 1: find first OK --------

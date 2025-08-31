@@ -77,16 +77,17 @@ Select a mounting routine, depending on your tool mounting system.
 
 # Slicer setup
 
-Gcodes for Prusa/Orca and derivatives
-
+Gcodes for Orca
 Start:
-```gcode
-PRINT_START  EXTRUDER={first_layer_temperature[initial_tool]} {if is_extruder_used[0]}T0_TEMP={first_layer_temperature[0]}{endif} {if is_extruder_used[1]}T1_TEMP={first_layer_temperature[1]}{endif} {if is_extruder_used[2]}T2_TEMP={first_layer_temperature[2]}{endif} {if is_extruder_used[3]}T3_TEMP={first_layer_temperature[3]}{endif} {if is_extruder_used[4]}T4_TEMP={first_layer_temperature[4]}{endif} {if is_extruder_used[5]}T5_TEMP={first_layer_temperature[5]}{endif}  BED=[bed_temperature_initial_layer_single] TOOL=[initial_tool] CHAMBER=[chamber_temperature]
+```nunjucks
+PRINT_START TOOL_TEMP={first_layer_temperature[initial_tool]} BED_TEMP=[first_layer_bed_temperature] TOOL=[initial_tool]{if is_extruder_used[0]} T0_TEMP={first_layer_temperature[0]}{endif}{if is_extruder_used[1]} T1_TEMP={first_layer_temperature[1]}{endif}{if is_extruder_used[2]} T2_TEMP={first_layer_temperature[2]}{endif}{if is_extruder_used[3]} T3_TEMP={first_layer_temperature[3]}{endif}{if is_extruder_used[4]} T4_TEMP={first_layer_temperature[4]}{endif}{if is_extruder_used[5]} T5_TEMP={first_layer_temperature[5]}{endif} CHAMBER=[chamber_temperature] EXTRUDER={first_layer_temperature[initial_tool]}
 ```
 
-Before Tool change/ Change filament 
+Before layer change:
 ```gcode
-M104 S{temperature[next_extruder]} T[next_extruder] ; set new tool temperature so it can start heating while changing
+;BEFORE_LAYER_CHANGE
+;[layer_z]
+G92 E0
 ```
 
 After layer change:
@@ -94,4 +95,5 @@ After layer change:
 ;AFTER_LAYER_CHANGE
 ;[layer_z]
 VERIFY_TOOL_DETECTED ASYNC=1 ; Check after each layer if the tool is still attached
+SET_PRINT_STATS_INFO TOTAL_LAYER=[total_layer_count] CURRENT_LAYER=[layer_num]
 ```

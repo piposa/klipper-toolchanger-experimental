@@ -373,12 +373,12 @@ class Toolchanger:
             if force_restore:
                 self._restore_axis(gcode_position, restore_axis, tool, extra_z_offset)
 
-            self.gcode.run_script_from_command(
-                "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
-            # Restore state sets old gcode offsets, fix that.
-            if tool is not None:
+            self.gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
+            
+            if tool is not None:    # Restore state sets old gcode offsets, fix that.
                 self._set_tool_gcode_offset(tool, extra_z_offset)
-
+            else:                   # Unselect: remove tool offset but global z
+                self.gcode.run_script_from_command(f"SET_GCODE_OFFSET X=0.0 Y=0.0 Z={extra_z_offset:.6f}")
             self.status = STATUS_READY
             if tool:
                 gcmd.respond_info(
@@ -388,7 +388,7 @@ class Toolchanger:
             self.current_change_id = -1
         except gcmd.error as e:
             if self.status == STATUS_ERROR:
-                gcmd.respond_error(f"Toolchange Failure: {e}")
+                gcmd.respond_info(f"Toolchange Failure: {e}")
                 # The error handling did happen, we can continue
                 pass
             else:

@@ -97,15 +97,18 @@ class ToolProbeEndstop:
                 if not triggered:
                     candidates.append(tool_probe)
             return candidates
-    
+        
         while True:
             host_now = self.reactor.monotonic()
             # default exit if we didnt detect one
             if self.toolhead.mcu.estimated_print_time(host_now) >= deadline_pt:
                 return _query_probes(host_now)
             keys = ([tool_number] if tool_number is not None else [tp.tool for tp in self.tool_probes.values()])
-            # Early-exit on falling edge: triggered (True) -> open (False)
+            # really early exit if its already detected right now
             candidates = _query_probes(host_now)
+            if tool_number is not None and self.last_query.get(tool_number) == 0:
+                return candidates
+            # Early-exit on falling edge: triggered (True) -> open (False)
             if any(prev.get(k, self.last_query[k]) and not self.last_query[k] for k in keys):
                 return candidates
             prev = dict(self.last_query)

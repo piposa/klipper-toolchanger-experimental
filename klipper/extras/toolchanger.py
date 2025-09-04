@@ -389,7 +389,8 @@ class Toolchanger:
             self.current_change_id = -1
         except gcmd.error as e:
             if self.status == STATUS_ERROR:
-                pass # The error handling did happen, we can continue
+                # pass
+                raise # The error handling did happen, we can continue
             else:
                 self.current_change_id = -1
                 raise # This was not handled, abort.
@@ -663,11 +664,11 @@ class Toolchanger:
             'toolchanger': self.get_status(curtime),
             **extra_context,
         }
-        try:
-            template.run_gcode_from_command(context)
-        except Exception as e:
-            self.gcode.respond_raw(f'!! exception during \'run_gcode\': {e}')
-            raise e
+        #try:
+        template.run_gcode_from_command(context)
+        #except Exception as e:
+        #    self.gcode.respond_raw(f'!! exception during \'run_gcode\': {e}')
+        #    raise e
         
     def cmd_SET_TOOL_OFFSET(self, gcmd):
         tool = self._get_tool_from_gcmd(gcmd)

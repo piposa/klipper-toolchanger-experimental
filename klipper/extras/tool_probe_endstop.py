@@ -85,6 +85,8 @@ class ToolProbeEndstop:
             self.cmd_helper.name = self.name
 
     def _query_open_tools(self, tool_number=None):
+        if tool_number is not None and tool_number not in self.tool_probes:
+            tool_number = None
         poll_s = 0.005
         prev = dict(self.last_query)
         self.last_query.clear()
@@ -105,13 +107,15 @@ class ToolProbeEndstop:
             # default exit if we didnt detect one
             if self.toolhead.mcu.estimated_print_time(host_now) >= deadline_pt:
                 return _query_probes(host_now)
-            keys = ([tool_number] if tool_number is not None else [tp.tool for tp in self.tool_probes.values()])
+            keys = ([tool_number] if tool_number is not None
+                    else [tp.tool for tp in self.tool_probes.values()])
             # really early exit if its already detected right now
             candidates = _query_probes(host_now)
-            if tool_number is not None and self.last_query.get(tool_number) == 0:
+            if tool_number is not None and self.last_query.get(tool_number, 1) == 0:
                 return candidates
             # Early-exit on falling edge: triggered (True) -> open (False)
-            if any(prev.get(k, self.last_query[k]) and not self.last_query[k] for k in keys):
+            if any(bool(prev.get(k, self.last_query.get(k, 0))) and not bool(self.last_query.get(k, 0))
+                   for k in keys):
                 return candidates
             prev = dict(self.last_query)
             self.reactor.pause(host_now + poll_s)

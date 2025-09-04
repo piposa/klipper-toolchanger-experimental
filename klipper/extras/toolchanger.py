@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import ast, bisect
+import ast, bisect, traceback
 from unittest.mock import sentinel
 
 STATUS_UNINITALIZED = 'uninitialized'
@@ -388,13 +389,10 @@ class Toolchanger:
             self.current_change_id = -1
         except gcmd.error as e:
             if self.status == STATUS_ERROR:
-                gcmd.respond_info(f"Toolchange Failure: {e}")
-                # The error handling did happen, we can continue
-                pass
+                pass # The error handling did happen, we can continue
             else:
-                # This was not handled, abort.
                 self.current_change_id = -1
-                raise
+                raise # This was not handled, abort.
 
     def _process_error(self, raise_error, message):
         self.status = STATUS_ERROR
@@ -520,7 +518,7 @@ class Toolchanger:
         if actual != expected:
             expected_name = expected.name if expected else "None"
             actual_name = actual.name if actual else "None"
-            message = "Expected tool %s but active is %s" % (expected_name, actual_name)
+            message = "Expected %s but active is %s" % (expected_name, actual_name)
             self._process_error(raise_error, message)
 
     def cmd_VERIFY_TOOL_DETECTED(self, gcmd):
@@ -559,6 +557,7 @@ class Toolchanger:
                 self.validate_detected_tool(expected, respond_info=gcmd.respond_info, raise_error=None)
                 if self.detected_tool != expected: 
                     toolhead.lookahead.reset() # we fucked up
+                    self.gcode.run_script_from_command("{action_raise_error('VERIFY_TOOL_DETECTED ASYNC error')}")
                 return reactor.NEVER
 
             def _lookahead_cb(print_time):
@@ -664,7 +663,11 @@ class Toolchanger:
             'toolchanger': self.get_status(curtime),
             **extra_context,
         }
-        template.run_gcode_from_command(context)
+        try:
+            template.run_gcode_from_command(context)
+        except Exception as e:
+            self.gcode.respond_raw(f'!! exception during \'run_gcode\': {e}')
+            raise e
         
     def cmd_SET_TOOL_OFFSET(self, gcmd):
         tool = self._get_tool_from_gcmd(gcmd)

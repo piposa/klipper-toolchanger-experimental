@@ -18,7 +18,7 @@ Note that if an update has new `klipper/extra` files, they **will not** be autom
 You will need to run the intall script manualy to add them:
 
 ```commandline
-bash ~/klipper-toolchanger-experimental/install.sh
+bash ~/klipper-toolchanger/install.sh
 ```
 
 ## Main-Components

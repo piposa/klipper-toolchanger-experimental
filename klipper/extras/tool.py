@@ -81,7 +81,9 @@ class Tool:
         _state = self.flip_detect_state ^ is_triggered
         self.detect_state = toolchanger.DETECT_PRESENT if _state else toolchanger.DETECT_ABSENT
         self.toolchanger.note_detect_change(self)
-
+        
+    # were the cuck here in registering the pin. we know what we want, but we have to check first if someone flipped it.
+    # this covers all 4 scenarios automatically, double assigned equal, double assigned equal and not equal, different first, different last.
     def _register_button(self, config):
         ppins = self.printer.lookup_object('pins')
         detect_param = ppins.parse_pin(self.detect_pin_name, can_invert=True, can_pullup=True)

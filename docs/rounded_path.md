@@ -3,7 +3,7 @@
 Automatic rounded corners for fast non-printing moves.
 Typical usage is a chain of move commands that need to be fast but can afford to not be fully accurate.  
 
-TODO: add image.
+![](../media/rounded-path-example.png)
 
 # Configuration
 

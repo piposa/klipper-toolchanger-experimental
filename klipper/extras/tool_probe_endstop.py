@@ -84,16 +84,37 @@ class ToolProbeEndstop:
             self.active_tool_number = -1
             self.cmd_helper.name = self.name
 
-    def _query_open_tools(self):
-        print_time = self.toolhead.get_last_move_time()
+    def _query_open_tools(self, tool_number=None):
+        poll_s = 0.005
+        prev = dict(self.last_query)
         self.last_query.clear()
-        candidates = []
-        for tool_probe in self.tool_probes.values():
-            triggered = tool_probe.mcu_probe.query_endstop(print_time)
-            self.last_query[tool_probe.tool] = triggered
-            if not triggered:
-                candidates.append(tool_probe)
-        return candidates
+        deadline_pt = self.toolhead.get_last_move_time()
+
+        def _query_probes(now):
+            candidates = []
+            for tool_probe in self.tool_probes.values():
+                mcu_now = tool_probe.mcu_probe.get_mcu().estimated_print_time(now)
+                triggered = tool_probe.mcu_probe.query_endstop(mcu_now)
+                self.last_query[tool_probe.tool] = triggered
+                if not triggered:
+                    candidates.append(tool_probe)
+            return candidates
+        
+        while True:
+            host_now = self.reactor.monotonic()
+            # default exit if we didnt detect one
+            if self.toolhead.mcu.estimated_print_time(host_now) >= deadline_pt:
+                return _query_probes(host_now)
+            keys = ([tool_number] if tool_number is not None else [tp.tool for tp in self.tool_probes.values()])
+            # really early exit if its already detected right now
+            candidates = _query_probes(host_now)
+            if tool_number is not None and self.last_query.get(tool_number) == 0:
+                return candidates
+            # Early-exit on falling edge: triggered (True) -> open (False)
+            if any(prev.get(k, self.last_query[k]) and not self.last_query[k] for k in keys):
+                return candidates
+            prev = dict(self.last_query)
+            self.reactor.pause(host_now + poll_s)
 
     def _describe_tool_detection_issue(self, candidates):
         if len(candidates) == 1 :
@@ -125,7 +146,8 @@ class ToolProbeEndstop:
 
     cmd_DETECT_ACTIVE_TOOL_PROBE_help = "Detect which tool is active by identifying a probe that is NOT triggered"
     def cmd_DETECT_ACTIVE_TOOL_PROBE(self, gcmd):
-        active_tools = self._query_open_tools()
+        tool_number = gcmd.get_int("T", self.active_tool_number)
+        active_tools = self._query_open_tools(tool_number)
         if len(active_tools) == 1 :
             active = active_tools[0]
             gcmd.respond_info("Found active tool probe: %s" % (active.name))

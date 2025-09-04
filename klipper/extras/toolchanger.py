@@ -528,23 +528,72 @@ class Toolchanger:
         expected = self.gcmd_tool(gcmd, self.active_tool)
         if not self.has_detection:
             raise gcmd.error("VERIFY_TOOL_DETECTED needs tool detection to be set up.")
+
         toolhead = self.printer.lookup_object('toolhead')
-        reactor = self.printer.get_reactor()
+        reactor  = self.printer.get_reactor()
+
         if gcmd.get_int("ASYNC", 0) == 1:
             if self.error_gcode is None:
                 raise gcmd.error("VERIFY_TOOL_DETECTED ASYNC=1 needs error_gcode to be defined")
-            def timer_handler(reactor_time) :
-                self.validate_detected_tool(expected, respond_info=gcmd.respond_info, raise_error=None)
-                return reactor.NEVER
-            if self.validate_tool_timer:
+            # Cancel any previously scheduled reactor timer
+            if self.validate_tool_timer is not None:
                 reactor.unregister_timer(self.validate_tool_timer)
-            self.validate_tool_timer = toolhead.register_lookahead_callback(lambda print_time:
-                                                                            reactor.register_timer(timer_handler, reactor.monotonic() + 0.2 + max(0.0, print_time - toolhead.mcu.estimated_print_time(reactor.monotonic())) ))
+                self.validate_tool_timer = None
+            self._vtd_seq = getattr(self, '_vtd_seq', 0) + 1
+            seq = self._vtd_seq # Generation counter so old callbacks/timers do nothing
+
+            window = gcmd.get_float("WINDOW", 0.005, minval=0.0)
+
+            def _timer_handler(eventtime):
+                if seq != getattr(self, '_vtd_seq', None):
+                    return reactor.NEVER
+
+                et = eventtime
+                deadline = et + window # Micro-poll up to 10 ms for late button messages (idk man, paranoia)
+                while self.detected_tool != expected and et < deadline:
+                    et = reactor.pause(et + 0.001)
+
+                # clear handle and validate (no raise, error_gcode handles failure)
+                self.validate_tool_timer = None
+                self.gcode.respond_info(f"micro-poll waited {(et - eventtime)*1000:.1f} ms; detected={self.detected_tool == expected}")
+                self.validate_detected_tool(expected, respond_info=gcmd.respond_info, raise_error=None)
+                if self.detected_tool != expected: 
+                    toolhead.lookahead.reset() # we fucked up
+                return reactor.NEVER
+
+            def _lookahead_cb(print_time):
+                if seq != getattr(self, '_vtd_seq', None):
+                    return
+                now     = reactor.monotonic()
+                mcu_now = toolhead.mcu.estimated_print_time(now)
+                fire_at = now + max(0.0, print_time + toolhead.kin_flush_delay - mcu_now)
+
+                if self.validate_tool_timer is not None:
+                    reactor.unregister_timer(self.validate_tool_timer)
+                    self.validate_tool_timer = None
+                self.validate_tool_timer = reactor.register_timer(_timer_handler, fire_at)
+
+            # schedule after currently queued motion truly finishes
+            toolhead.register_lookahead_callback(_lookahead_cb)
+            return
         else:
-            toolhead.wait_moves()
-            # Wait some more to allow tool sensors to update
-            reactor.pause(reactor.monotonic() + 0.2)
-            self.validate_detected_tool(expected, respond_info=gcmd.respond_info, raise_error=gcmd.error)
+            # poll until detected, or 0.5 s after true motion end passes
+            poll_s, timeout_s = 0.001, 0.5
+            anchor_pt = toolhead.get_last_move_time() + toolhead.kin_flush_delay  # print_time anchor
+            eventtime = reactor.monotonic()
+            deadline  = None  # reactor-time deadline set once MCU crosses anchor
+
+            while True:
+                if self.detected_tool == expected:
+                    self.validate_detected_tool(expected, respond_info=gcmd.respond_info, raise_error=gcmd.error)
+                    return
+                mcu_now = toolhead.mcu.estimated_print_time(eventtime)
+                if deadline is None and mcu_now >= anchor_pt:
+                    deadline = eventtime + timeout_s
+                if deadline is not None and eventtime >= deadline:
+                    self.validate_detected_tool(expected, respond_info=gcmd.respond_info, raise_error=gcmd.error)
+                    return
+                eventtime = reactor.pause(eventtime + poll_s)
 
     def _configure_toolhead_for_tool(self, tool):
         if self.active_tool:

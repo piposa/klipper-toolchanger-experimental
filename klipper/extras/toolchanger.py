@@ -765,8 +765,8 @@ class Toolchanger:
             tool_number = gcmd.get_int(extra_number_arg, None)
         tool = None
         if tool_name:
-            tool = self.printer.lookup_object(tool_name)
-        if tool_number is not None:
+            tool = self.printer.lookup_object(tool_name, None)
+        if tool is None and tool_number is not None:
             tool = self.lookup_tool(tool_number)
             if not tool:
                 raise gcmd.error('Tool #%d is not assigned' % (tool_number))

@@ -68,7 +68,7 @@ function do_shared_config {
 
     ln -sfn "${INSTALL_PATH}"/examples/dock\ location/fixed/toolchanger.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs
     ln -sfn "${INSTALL_PATH}"/examples/easy-additions/homing.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs
-    ln -sfn "${INSTALL_PATH}"/examples/calibrate-offsets.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs
+    ln -sfn "${INSTALL_PATH}"/examples/easy-additions/calibrate-offsets.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs
     ln -sfn "${INSTALL_PATH}"/examples/easy-additions/toolchanger-macros.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs
 
     cp -n "${INSTALL_PATH}"/examples/easy-additions/user-configs/toolchanger-config.cfg "${CONFIG_PATH}"/toolchanger

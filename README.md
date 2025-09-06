@@ -73,7 +73,7 @@ Top of `print_start` macro
     {% set TOOL_TEMP = params.TOOL_TEMP | default(0) | int %}
     {% set BED_TEMP = params.BED_TEMP | default(0) | int %}
 
-    {% if printer["gcode_macro _INITIALIZE_FROM_DETECTED_TOOL"] is defined %}
+    {% if printer["tool_probe_endstop"] is not defined %}
         STOP_TOOL_PROBE_CRASH_DETECTION
     {% endif %}
 
@@ -101,7 +101,7 @@ Bottom of `print_start` macro:
         M109 S{TOOL_TEMP}
     {% endif %}
 
-    {% if printer["gcode_macro _INITIALIZE_FROM_DETECTED_TOOL"] is defined %}
+    {% if printer["tool_probe_endstop"] is not defined %}
         START_TOOL_PROBE_CRASH_DETECTION
     {% endif %}
     

@@ -27,7 +27,9 @@ on home or first toolchange.
 The exact sequence how each step is executed:
 ![Sequence](../media/Sequence.png)
 
-# Config
+---
+
+## Config
 
 ### [toolchanger]
 
@@ -64,7 +66,7 @@ params_*: <python literal>               (exposed in templates and inherited by 
 Defines a tool that can be selected.
 Normally a tool has an assigned extruder, fans and associated printer config,
 like pressure advance. But can be purely virtual, like slot in an MMU unit.
-See [command reference](G-Codes.md#toolchanger) for how to control tools.
+See [command reference](#Gcodes) for how to control tools.
 Tool params, gcode offsets, restore axis.... all inherit from `[toolchanger]` and can override.  
 ```
 extruder: <extruder>                    
@@ -96,7 +98,9 @@ params_*: <python literal>               overrides inherited parameters from too
 ### on_tool_mounted_gcode and on_tool_removed_gcode specific
 * `detected_tool` tool object of just mounted tool (or none if not a mount)
 * `removed_tool` tool object of just removed tool (or none if not a remove)
-  
+
+---
+
 ## Gcodes
 
 ### [toolchanger]
@@ -207,7 +211,9 @@ If `toolchanger.transfer_fan_speed` is enabled, current tool fan speed is transf
 `M107 [P<tool number>] [T<tool number>] [TOOL=<tool name>] `: Stop fan.
 With no parameters stops the current tool fan.
 
-# Status
+---
+
+## Status
 
 ## tool
 
@@ -216,11 +222,8 @@ The following information is available in the `tool` object:
  - `tool_number`: The assigned tool number or -1 if not assigned.
  - `toolchanger`: The name of the toolchanger this tool is attached to. 
  - `extruder`: Name of the extruder used for this tool.
- - `fan`: Full name of the fan to be used as part cooling fan for this tool, use [fan_generic] fans.
- - `active`: If this tool is currently the selected tool.
- - `mounted`: If this tool is currently mounted, the tool may be mounted but
-   not selected. Some reasons for that can be that a child tool is selected, or
-   lazy unmounting is configured.  
+ - `fan`: Full name of the fan to be used as part cooling fan for this tool.
+ - `active`: If this tool is currently the selected tool. 
  - `mounted_child`: The child tool which is currently mounted, or empty.
  - `params_*`: Set of values specified using params_*.
  - `gcode_x_offset`: current X offset.

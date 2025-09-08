@@ -74,6 +74,7 @@ class Toolchanger:
         config.get('fan', None)
         config.get_prefix_options('params_')
 
+        self.homing = False
         self.is_printer_ready = False 
         self.status = STATUS_UNINITALIZED
         self.active_tool = None
@@ -88,6 +89,8 @@ class Toolchanger:
 
         self.printer.register_event_handler("homing:home_rails_begin",
                                             self._handle_home_rails_begin)
+        self.printer.register_event_handler("homing:home_rails_end",
+                                            self._handle_home_rails_end)
         self.printer.register_event_handler('klippy:connect',
                                             self._handle_connect)
         self.printer.register_event_handler("klippy:ready", 
@@ -133,6 +136,12 @@ class Toolchanger:
             self.fan_switcher = FanSwitcher(self, self.config)
 
     def _handle_home_rails_begin(self, homing_state, rails):
+        self.homing = True
+        if self.initialize_on == INIT_ON_HOME and self.status == STATUS_UNINITALIZED:
+            self.initialize(self.detected_tool)
+
+    def _handle_home_rails_end(self, homing_state, rails):
+        self.homing = False
         if self.initialize_on == INIT_ON_HOME and self.status == STATUS_UNINITALIZED:
             self.initialize(self.detected_tool)
 
@@ -347,7 +356,7 @@ class Toolchanger:
             extra_context = {
                 'dropoff_tool': self.active_tool.name if self.active_tool else None,
                 'pickup_tool': tool.name if tool else None,
-                'start_position': self._position_with_tool_offset(gcode_position, 'xyz', tool, extra_z_offset),
+                'start_position': self._position_with_tool_offset(gcode_position, 'xyz', tool, extra_z_offset), # absolute? + global z...
                 'restore_position': self._position_with_tool_offset(gcode_position, restore_axis, tool, extra_z_offset),
             }
 
@@ -490,14 +499,18 @@ class Toolchanger:
         if len(detected_names) > 1:
             self.gcode.respond_info("Multiple tools detected: %s" % (detected_names,))
             detected = None
-        if detected != self.detected_tool and not self.status in [STATUS_CHANGING, STATUS_INITIALIZING] and self.is_printer_ready:
-            if detected and not self.detected_tool:
-                self.run_gcode('on_tool_mounted_gcode', 
-                               detected.on_tool_mounted_gcode, {'tool': detected})
-            elif not detected and self.detected_tool:
-                self.run_gcode('on_tool_removed_gcode', 
-                               self.detected_tool.on_tool_removed_gcode, {'tool': self.detected_tool})
+        old_detected = self.detected_tool
         self.detected_tool = detected
+        if detected != old_detected and not self.status in [STATUS_CHANGING, STATUS_INITIALIZING] and self.is_printer_ready and not self.homing:
+            if detected and not old_detected:
+                self.run_gcode('on_tool_mounted_gcode', 
+                               detected.on_tool_mounted_gcode, 
+                               {'detected_tool': detected, 'removed_tool': None})
+            elif not detected and old_detected:
+                self.run_gcode('on_tool_removed_gcode', 
+                               old_detected.on_tool_removed_gcode, 
+                               {'detected_tool': None, 'removed_tool': old_detected})
+        
         
     def require_detected_tool(self, respond_info):
         if self.detected_tool is not None:

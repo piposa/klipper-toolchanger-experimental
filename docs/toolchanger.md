@@ -22,10 +22,10 @@ This is the overall lifecycle of the toolchanger.
 The initialization can be done either manually from PRINT_START or automatically
 on home or first toolchange.
 
-![Lifecycle](/Lifecycle.png)
+![Lifecycle](../media/lifecycle.png)
 
 The exact sequence how each step is executed:
-![Sequence](/Sequence.png)
+![Sequence](../media/Sequence.png)
 
 # Config
 
@@ -33,134 +33,71 @@ The exact sequence how each step is executed:
 
 Configures common tool changing parameters. 
 More than one toolchanger can be configured, with arbitrary names.
-The unnamed toolchanger is always considered the main one and others can be 
-connected to a tool in the main toolchanger.
+~~The unnamed toolchanger is always considered the main one and others can be 
+connected to a tool in the main toolchanger.~~(**TODO**)  
 
 Any parameter that can be set on a tool, can be set on the toolchanger as well
 and will provide a default value for all of its tools.
 
 ```
-[toolchanger]
-# save_current_tool: false
-  #  If set, saves currently selected tool and makes it available for 
-  # initialize gcode.
-# initialize_gcode: 
-  #  Gcode to run on initialize. Typically used for homing any motors, or 
-  #  reselecting saved tool.
-# initialize_on: first-use
-  # When this toolchanger gets initialized.
-  #  - manual: only when INITIALIZE_TOOLCHANGER is called.
-  #  - home: when homing the printer.
-  #  - first-use: on first toolchange command.
-# verify_tool_pickup: True
-  # If tool detection is available, will verify tool presence after pickp_gcode
-# require_tool_present: False
-  # Raise error if no tool present on init or on unmount. 
-  # Use in case the tool contains crucial sensors for the printer to operate/home.  
-# uses_axis: xyz 
-  # Axis used by the tool change process
-# on_axis_not_homed: abort
-  # When required axis are not homed
-  # - abort: aborts the command
-  # - home: attempts to home the axis
-# params_*: 
-  # Extra params to pass to pickup/dropoff gcode. Accessible in the gcode via
-  # `toolchanger.params_name`.
-  # Also will be copied to any tools for this toolchanger with local
-  # values overriding. 
-# before_change_gcode:
-  # Common gcode to run before any tool change   
-# after_change_gcode:
-  # Common gcode to run after any tool change.
-  # EG: To set custom input shaping, accelerations, etc.  
-# error_gcode:
-  # If specified, this gcode is run on failures instead of erroring out Klipper 
-  # Typical use would be to pause the print and put INITIALIZE_TOOLCHANGER in the resume macro to reset toolchanger.
-# recover_gcode:
-  # Experimental, if specified, this gcode is run on `INITIALIZE_TOOLCHANGER RECOVER=1` to recover the position.
-  # Should not generally be necessary, but adds optional extra control.
-# parent_tool:
-  # Name of a parent tool. Marks this toolchanger as a child, meaning the parent tool
-  # will be selected in order to select any tool attached to this.
-  # Can be used for chaining multiple filament/tool changing techniques,
-  # like IDEX plus an MMU attached to one of the hotends.
-# parent_mounting_mode: parent-first 
-  # How to mount parent when the tool is selected:
-  # - parent-first - mount parent and then child
-  # - child-first - mount child before parent can be mounted
-# parent_unmounting_mode: lazy 
-  # How to unmount parent when the tool is deselected:
-  # - child-first - unmount child and then parent
-  # - parent-first - unmount parent and then child
-  # - lazy - no dot unmount the child unless a needed to mount a sibling
-# transfer_fan_speed: True
-  # When tre, fan speed is transferred during toolchange. When false, fan speeds are not changed during toolchange.     
+initialize_on: <manual|home|first-use>   default: first-use)
+initialize_gcode: <template>            
+verify_tool_pickup: <True|False>         default: True)
+require_tool_present: <True|False>       default: False)
+uses_axis: <xyz>                         default: xyz)
+on_axis_not_homed: <abort|home>          default: abort)
+perform_restore_move: <True|False>       default: True)
+pickup_gcode: <template> 
+dropoff_gcode: <template> 
+before_change_gcode: <template>         
+after_change_gcode: <template>          
+error_gcode: <template>                  required for VERIFY_TOOL_DETECTED ASYNC=1
+recover_gcode: <template>                Template used to recover after error_gcode (see INITIALIZE_TOOLCHANGER RECOVER=1).
+on_tool_mounted_gcode: <template>        These templates fire on detection state changes but not during toolchanges or probing.
+on_tool_removed_gcode: <template>       
+transfer_fan_speed: <True|False>         default: True)
+params_*: <python literal>               (exposed in templates and inherited by tools)
+(and all the other ones that tools can have)
 ```
-
 ### [tool]
 
 Defines a tool that can be selected.
 Normally a tool has an assigned extruder, fans and associated printer config,
 like pressure advance. But can be purely virtual, like slot in an MMU unit.
 See [command reference](G-Codes.md#toolchanger) for how to control tools.
+Tool params, gcode offsets, restore axis.... all inherit from `[toolchanger]` and can override.  
+```
+extruder: <extruder>                    
+extruder_stepper: <extruder_stepper>     optional extra stepper to sync via SYNC_EXTRUDER_MOTION
+fan: <fan_generic>                       
+detection_pin: <pin>                     required if any tool has detection, enables on_tool_mounted_gcode and on_tool_removed_gcode
+tool_number: <n>=0..                     registers T<n>
+gcode_x_offset: <mm>                     
+gcode_y_offset: <mm>                     
+gcode_z_offset: <mm>
+# most if not all the templates from toolchanger are equally able to overwrite the "default" ones inherited from toolchanger.               
+params_*: <python literal>               overrides inherited parameters from toolchanger
+```
 
-All gcode macros below have the following context available:
+## templates
+### avalible in all templates:
 * tool - currently active tool or None if no tool. This is the actual object, not a name, so can use directly, ie `tool.fan`.
 * toolchanger - same as printer.toolchanger.
-* dropoff_tool - name of the tool that is being dopped off, or None if not a dropoff operation.
-* pickup_tool - name of the tool that is being picked up, or None if not a dropoff operation.
-* restore_position.X .Y .Z - coordinates to restore the position to after toolchange. 
-   Only the ones requested are set. A G0 to the coordinates is automatically run after the toolchange.
-   This is primarily for path optimization. 
+
+### avalible in before_change_gcode...pickup_gcode etc have the following:
+* `dropoff_tool` - name of the tool that is being dopped off, or None if not a dropoff operation.
+* `pickup_tool` - name of the tool that is being picked up, or None if not a dropoff operation.
+### pickup_gcode and dropoff_gcode specific
+* `restore_position.X .Y .Z` - coordinates to restore the position to after toolchange. 
+   Only the ones requested are set.  
    Adjusted to account for tool offsets.
-* start_position.X .Y .Z - coordinates before toolchange, regardless of what is requested. 
+* `start_position.X .Y .Z` - coordinates before toolchange, regardless of what is requested. 
    Adjusted to account for tool offsets. 
-
-```
-[tool tool_name]
-# toolchanger: toolchanger
-  # Which toolchanger this tool belongs to.
-# extruder:
-  # Name of the extruder to activate when this tool is selected.
-  # If not specified, will use parent's extruder.
-# extruder_stepper: 
-  # Name of extruder stepper to use for filament motion.
-  # When set the main extruder is only used for temperature control.
-  # Useful for Y type multi extruder hotends.  
-# fan: 
-  # Name of the fan to use as print cooling fan when this tool is selected.
-  # If not set, uses parent fan or does nothing.
-# detection_pin: 
-  # Pin to use for tool presence detection.
-# tool_number: 
-  # Tool number to register this tool as.
-  # When set, creates the T<n> macro and changes M104/M109 T<n> to target this tool.
-  # Can be overwritten in runtime using [ASSIGN_TOOL](G-Codes.md#ASSIGN_TOOL) command.
-# pickup_gcode:
-  # Gcode to run to pick up this tool, if empty, there is no pickup code.
-  # The gocode can use `tool` and `toolchanger` variables to access
-  # [their status](Status_Reference.md#tool).
-# dropoff_gcode:
-  # Gcode to run to drop off this tool, if empty, there is no dropoff code.
-# gcode_x_offset: 0
-# gcode_y_offset: 0
-# gcode_z_offset: 0
-  # The XYZ gcode offset of the toolhead. If set, overrides offset defined 
-  # by the parent. If set, even to 0, indicates the offset on that axis is 
-  # relevant for this tool and any adjustments will be attributed to this tool.  
-# params_*: 
-  # Extra params to pass to pickup/dropoff gcode. Accessible in the gcode via
-  # `tool.params_name`.
-  # Some example params:
-  #  params_dock_x: 10.0
-  #  params_dock_y: 50.0
-  #  params_input_shaper_freq_x: 100
-  #  params_retract_mm: 8 
-# t_command_restore_axis: XYZ
-   # Which axis to restore with the T<n> command, see SELECT_TOOL for command for more info.
-```
-
-# Gcodes
+### on_tool_mounted_gcode and on_tool_removed_gcode specific
+* `detected_tool` tool object of just mounted tool (or none if not a mount)
+* `removed_tool` tool object of just removed tool (or none if not a remove)
+  
+## Gcodes
 
 ### [toolchanger]
 
@@ -181,7 +118,7 @@ Experimental: If `RECOVER=1` is specified, `recover_gcode` is run and toolehad i
 ### ASSIGN_TOOL
 `ASSIGN_TOOL TOOL=<name> N=<number>`: Assign tool to specific tool number.
 Overrides any assignments set up by `tool.tool_number`.
-Sets up a corresponding T<n> and M104/M109 T<index> commands.
+Sets up a corresponding T<n> and M106/M107 T<index> commands.
 Does *not* change the active tool.
 
 ### SELECT_TOOL
@@ -201,9 +138,9 @@ The selection sequence is as follows:
 - new extruder and fan are activated, if changed
 - toolchanger.after_change_gcode is run
 - gcode state is restored, without move
-- new tool is moved to the gcode position, according to RESTORE_AXIS
+- new tool is moved to the gcode position, according to RESTORE_AXIS and force restore.
 
-If the tools have parents, their corresponding dropoff/pickup gcode is also run.  
+~~If the tools have parents, their corresponding dropoff/pickup gcode is also run.~~(TODO)  
 
 ### SELECT_TOOL_ERROR
 `SELECT_TOOL_ERROR [MESSAGE=]`: Signals failure to select a tool. 
@@ -218,14 +155,16 @@ Performs only the first part of select tool, leaving the printer with no tool
 selected.
 
 ### VERIFY_TOOL_DETECTED
-`VERIFY_TOOL_DETECTED [TOOL=<name>] [T=<number>] [ASYNC=0]`: Check if detected tool 
-matches the expected tool. Shutdown Klipper if not. 
+`VERIFY_TOOL_DETECTED [TOOL=<name>] [T=<number>] [ASYNC=0] [WINDOW=0.005]`: Check if detected tool 
+matches the expected tool. runs error gcode or shuts down klipper.
 Does nothing if tool detection pin is not configured.
-If ASYNC=0, will wait until any queued moves are complete, causing the toolhead to come to a stop for a bit.   
-If ASYNC=1, will return immediately and perform the check in background after all previous moves are finished.
+* If ASYNC=0, will continously check if the tool has been detected, and time out when all queued moves are complete. *(for fastest detection, run as late as you can allow safely)*  
+* If ASYNC=1, will return immediately and perform the check in background, call this at the point where you know you `**just** triggered the detection pin for best results. On non detect this may however mean that the toolchange and restore move long finished before the error_gcode commands hit the que! beware of that.
+If youre using async and get false triggers, raise WINDOW, otherwise keep it lower for faster fault detection.  
+
 A verification failure will:
- - abort in-progress toolchange, put the toolchanger in `ERROR` state.
- - Run`error_gcode` if one is provided. 
+ - abort in-progress toolchange.
+ - put the toolchanger in `ERROR` state and run `error_gcode` if one is provided.
 
 ### SET_TOOL_TEMPERATURE
 `SET_TOOL_TEMPERATURE [TOOL=<name>] [T=<number>]  TARGET=<temp> [WAIT=0]`: Set tool temperature.
@@ -247,6 +186,15 @@ Defaults to current tool if tool not specified.
 `RESET_TOOL_PARAMETER [TOOL=<name>] [T=<number>]  PARAMETER=parameter_<name> VALUE=<value>`: 
 Resets a parameter to its original value.
 Defaults to current tool if tool not specified.
+
+### SET_TOOL_OFFSET
+`SET_TOOL_OFFSET [TOOL=<name>] [T=<number>] [X=<float>] [Y=<float>] [Z=<float>]`
+similar to 'SET_TOOL_PARAMETER' but for the gcode offsets.
+
+### SAVE_TOOL_OFFSET
+`SAVE_TOOL_OFFSET [TOOL=<name>] [T=<number>] [X=<float>] [Y=<float>] [Z=<float>]`
+again, similar to 'SAVE_TOOL_PARAMETER' but for the gcode offsets.  
+If no XYZ provided, saves currently active tool offsets to pending config changes.
 
 # Gcodes if *fan* is specified for any of tools
 

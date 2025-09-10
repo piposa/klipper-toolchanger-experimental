@@ -45,14 +45,14 @@ function use_tap_per_tool {
 
     ln -sfn "${INSTALL_PATH}"/examples/easy-additions/tool_detection.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs/
     cp -n "${INSTALL_PATH}"/examples/easy-additions/user-configs/tools/tap_per_tool/* "${CONFIG_PATH}"/toolchanger/tools
-    ln -sfn"${INSTALL_PATH}"/examples/easy-additions/user-configs/toolchanger-include.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs/toolchanger-include.cfg
+    ln -sfn "${INSTALL_PATH}"/examples/easy-additions/user-configs/toolchanger-include.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs/toolchanger-include.cfg
 }
 
 function z_probe_on_shuttle {
     echo "[INSTALL] Z Probe on Shuttle"
 
     cp -n "${INSTALL_PATH}"/examples/easy-additions/user-configs/tools/probe_on_shuttle/* "${CONFIG_PATH}"/toolchanger/tools
-    ln -sfn"${INSTALL_PATH}"/examples/easy-additions/user-configs/toolchanger-include_scanner.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs/toolchanger-include.cfg
+    ln -sfn "${INSTALL_PATH}"/examples/easy-additions/user-configs/toolchanger-include_scanner.cfg "${CONFIG_PATH}"/toolchanger/readonly-configs/toolchanger-include.cfg
 }
 
 function link_extension {

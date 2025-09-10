@@ -7,6 +7,7 @@
 import ast, bisect
 import ast, bisect, traceback
 from unittest.mock import sentinel
+from .probe_blind_button import ProbeBlindButton
 
 STATUS_UNINITALIZED = 'uninitialized'
 STATUS_INITIALIZING = 'initializing'
@@ -74,7 +75,8 @@ class Toolchanger:
         config.get('fan', None)
         config.get_prefix_options('params_')
 
-        self.homing = False
+        self._det_btn = ProbeBlindButton(self.printer, on_change=self._on_probe_blinded_change)
+
         self.is_printer_ready = False 
         self.status = STATUS_UNINITALIZED
         self.active_tool = None
@@ -89,8 +91,6 @@ class Toolchanger:
 
         self.printer.register_event_handler("homing:home_rails_begin",
                                             self._handle_home_rails_begin)
-        self.printer.register_event_handler("homing:home_rails_end",
-                                            self._handle_home_rails_end)
         self.printer.register_event_handler('klippy:connect',
                                             self._handle_connect)
         self.printer.register_event_handler("klippy:ready", 
@@ -136,12 +136,6 @@ class Toolchanger:
             self.fan_switcher = FanSwitcher(self, self.config)
 
     def _handle_home_rails_begin(self, homing_state, rails):
-        self.homing = True
-        if self.initialize_on == INIT_ON_HOME and self.status == STATUS_UNINITALIZED:
-            self.initialize(self.detected_tool)
-
-    def _handle_home_rails_end(self, homing_state, rails):
-        self.homing = False
         if self.initialize_on == INIT_ON_HOME and self.status == STATUS_UNINITALIZED:
             self.initialize(self.detected_tool)
 
@@ -156,7 +150,7 @@ class Toolchanger:
 
     def _handle_ready(self):
         self.is_printer_ready = True
-        
+
     def get_status(self, eventtime):
         return {**self.params,
                 'name': self.name,
@@ -186,7 +180,10 @@ class Toolchanger:
         all_detection = all([t.detect_state != DETECT_UNAVAILABLE for t in self.tools.values()])
         if self.has_detection and not all_detection:
             raise self.config.error("Some tools missing detection pin")
-
+        elif not self.has_detection and (self.config.get('on_tool_mounted_gcode', False) or \
+                                        self.config.get('on_tool_removed_gcode', False)):
+            raise self.config.error('on_tool_mounted_gcode or on_tool_removed_gcode require tool detection')
+        
     cmd_INITIALIZE_TOOLCHANGER_help = "Initialize the toolchanger"
 
     def cmd_INITIALIZE_TOOLCHANGER(self, gcmd):
@@ -356,7 +353,7 @@ class Toolchanger:
             extra_context = {
                 'dropoff_tool': self.active_tool.name if self.active_tool else None,
                 'pickup_tool': tool.name if tool else None,
-                'start_position': self._position_with_tool_offset(gcode_position, 'xyz', tool, extra_z_offset), # absolute? + global z...
+                'start_position': self._position_with_tool_offset(gcode_position, 'xyz', tool, extra_z_offset),
                 'restore_position': self._position_with_tool_offset(gcode_position, restore_axis, tool, extra_z_offset),
             }
 
@@ -489,7 +486,7 @@ class Toolchanger:
     def get_selected_tool(self):
         return self.active_tool
 
-    def note_detect_change(self, tool):
+    def note_detect_change(self, _tool=None):
         detected = None
         detected_names = []
         for t in self.tools.values():
@@ -499,19 +496,18 @@ class Toolchanger:
         if len(detected_names) > 1:
             self.gcode.respond_info("Multiple tools detected: %s" % (detected_names,))
             detected = None
-        old_detected = self.detected_tool
+
         self.detected_tool = detected
-        if detected != old_detected and not self.status in [STATUS_CHANGING, STATUS_INITIALIZING] and self.is_printer_ready and not self.homing:
-            if detected and not old_detected:
-                self.run_gcode('on_tool_mounted_gcode', 
-                               detected.on_tool_mounted_gcode, 
-                               {'detected_tool': detected, 'removed_tool': None})
-            elif not detected and old_detected:
-                self.run_gcode('on_tool_removed_gcode', 
-                               old_detected.on_tool_removed_gcode, 
-                               {'detected_tool': None, 'removed_tool': old_detected})
-        
-        
+        self._det_btn.note_change(detected)
+
+    def _on_probe_blinded_change(self, last, new):
+        if not self.is_printer_ready or self.status in (STATUS_CHANGING, STATUS_INITIALIZING):
+            return
+        if new:
+            self.run_gcode('on_tool_mounted_gcode', new.on_tool_mounted_gcode, {'detected_tool': new, 'removed_tool': None})
+        elif last:
+            self.run_gcode('on_tool_removed_gcode', last.on_tool_removed_gcode, {'detected_tool': None, 'removed_tool': last})
+
     def require_detected_tool(self, respond_info):
         if self.detected_tool is not None:
             return self.detected_tool

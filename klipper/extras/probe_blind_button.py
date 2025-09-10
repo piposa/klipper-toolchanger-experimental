@@ -66,11 +66,6 @@ class ProbeBlindButton:
         old, mid, new = self._stable_key, self._raw_key, key
         self._raw_key = new  # so the timer always sees the freshest value
 
-        if old is None: # first observation becomes baseline
-            self._stable_key = new
-            self._raw_key = new
-            return
-
         if self._timer is None and new == old:
             return
         
@@ -98,7 +93,6 @@ class ProbeBlindButton:
             return
 
         if self._latched:
-            # let timer handle late-window emissions
             return
 
         if new != old:

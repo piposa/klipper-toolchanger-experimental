@@ -171,4 +171,8 @@ class ProbeSessionHelper:
         return res
 
 def load_config_prefix(config):
-    return ToolProbe(config)
+    try:
+        from .kalico_compat.tool_probe import load_config_prefix as kload
+        return kload(config)
+    except Exception:
+        return ToolProbe(config)

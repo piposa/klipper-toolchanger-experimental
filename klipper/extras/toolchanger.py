@@ -7,6 +7,7 @@
 import ast, bisect
 import ast, bisect, traceback
 from unittest.mock import sentinel
+from .probe_blind_button import ProbeBlindButton
 
 STATUS_UNINITALIZED = 'uninitialized'
 STATUS_INITIALIZING = 'initializing'
@@ -73,6 +74,8 @@ class Toolchanger:
         config.get('extruder', None)
         config.get('fan', None)
         config.get_prefix_options('params_')
+
+        self._det_btn = ProbeBlindButton(self.printer, on_change=self._on_probe_blinded_change)
 
         self.is_printer_ready = False 
         self.status = STATUS_UNINITALIZED
@@ -147,7 +150,7 @@ class Toolchanger:
 
     def _handle_ready(self):
         self.is_printer_ready = True
-        
+
     def get_status(self, eventtime):
         return {**self.params,
                 'name': self.name,
@@ -177,7 +180,10 @@ class Toolchanger:
         all_detection = all([t.detect_state != DETECT_UNAVAILABLE for t in self.tools.values()])
         if self.has_detection and not all_detection:
             raise self.config.error("Some tools missing detection pin")
-
+        elif not self.has_detection and (self.config.get('on_tool_mounted_gcode', False) or \
+                                        self.config.get('on_tool_removed_gcode', False)):
+            raise self.config.error('on_tool_mounted_gcode or on_tool_removed_gcode require tool detection')
+        
     cmd_INITIALIZE_TOOLCHANGER_help = "Initialize the toolchanger"
 
     def cmd_INITIALIZE_TOOLCHANGER(self, gcmd):
@@ -480,7 +486,7 @@ class Toolchanger:
     def get_selected_tool(self):
         return self.active_tool
 
-    def note_detect_change(self, tool):
+    def note_detect_change(self, _tool=None):
         detected = None
         detected_names = []
         for t in self.tools.values():
@@ -490,15 +496,18 @@ class Toolchanger:
         if len(detected_names) > 1:
             self.gcode.respond_info("Multiple tools detected: %s" % (detected_names,))
             detected = None
-        if detected != self.detected_tool and not self.status in [STATUS_CHANGING, STATUS_INITIALIZING] and self.is_printer_ready:
-            if detected and not self.detected_tool:
-                self.run_gcode('on_tool_mounted_gcode', 
-                               detected.on_tool_mounted_gcode, {'tool': detected})
-            elif not detected and self.detected_tool:
-                self.run_gcode('on_tool_removed_gcode', 
-                               self.detected_tool.on_tool_removed_gcode, {'tool': self.detected_tool})
+
         self.detected_tool = detected
-        
+        self._det_btn.note_change(detected)
+
+    def _on_probe_blinded_change(self, last, new):
+        if not self.is_printer_ready or self.status in (STATUS_CHANGING, STATUS_INITIALIZING):
+            return
+        if new:
+            self.run_gcode('on_tool_mounted_gcode', new.on_tool_mounted_gcode, {'detected_tool': new, 'removed_tool': None})
+        elif last:
+            self.run_gcode('on_tool_removed_gcode', last.on_tool_removed_gcode, {'detected_tool': None, 'removed_tool': last})
+
     def require_detected_tool(self, respond_info):
         if self.detected_tool is not None:
             return self.detected_tool
@@ -528,6 +537,7 @@ class Toolchanger:
         if not self.has_detection:
             raise gcmd.error("VERIFY_TOOL_DETECTED needs tool detection to be set up.")
 
+        motion_queuing = self.printer.lookup_object('motion_queuing')
         toolhead = self.printer.lookup_object('toolhead')
         reactor  = self.printer.get_reactor()
 
@@ -566,7 +576,7 @@ class Toolchanger:
                     return
                 now     = reactor.monotonic()
                 mcu_now = toolhead.mcu.estimated_print_time(now)
-                fire_at = now + max(0.0, print_time + toolhead.kin_flush_delay - mcu_now)
+                fire_at = now + max(0.0, print_time + motion_queuing.get_kin_flush_delay() - mcu_now)
 
                 if self.validate_tool_timer is not None:
                     reactor.unregister_timer(self.validate_tool_timer)
@@ -579,7 +589,7 @@ class Toolchanger:
         else:
             # poll until detected, or 0.5 s after true motion end passes
             poll_s, timeout_s = 0.001, 0.5
-            anchor_pt = toolhead.get_last_move_time() + toolhead.kin_flush_delay  # print_time anchor
+            anchor_pt = toolhead.get_last_move_time() + motion_queuing.get_kin_flush_delay()  # print_time anchor
             eventtime = reactor.monotonic()
             deadline  = None  # reactor-time deadline set once MCU crosses anchor
 

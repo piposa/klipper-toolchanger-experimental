@@ -96,7 +96,10 @@ class ToolProbeEndstop:
             candidates = []
             for tool_probe in self.tool_probes.values():
                 mcu_now = tool_probe.mcu_probe.get_mcu().estimated_print_time(now)
-                triggered = tool_probe.mcu_probe.query_endstop(mcu_now)
+                try:
+                    triggered = tool_probe.mcu_probe.query_endstop(mcu_now)
+                except:
+                     triggered = 1
                 self.last_query[tool_probe.tool] = triggered
                 if not triggered:
                     candidates.append(tool_probe)
@@ -114,8 +117,7 @@ class ToolProbeEndstop:
             if tool_number is not None and self.last_query.get(tool_number, 1) == 0:
                 return candidates
             # Early-exit on falling edge: triggered (True) -> open (False)
-            if any(bool(prev.get(k, self.last_query.get(k, 0))) and not bool(self.last_query.get(k, 0))
-                   for k in keys):
+            if any(bool(prev.get(k, self.last_query.get(k, 0))) and not bool(self.last_query.get(k, 0)) for k in keys):
                 return candidates
             prev = dict(self.last_query)
             self.reactor.pause(host_now + poll_s)
@@ -269,4 +271,8 @@ class EndstopRouter:
         return self.active_mcu.get_position_endstop()
 
 def load_config(config):
-    return ToolProbeEndstop(config)
+    try:
+        from .kalico_compat.tool_probe_endstop import load_config as kload
+        return kload(config)
+    except Exception:
+        return ToolProbeEndstop(config)

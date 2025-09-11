@@ -45,6 +45,8 @@ class Tool:
         self.flip_detect_state = True
         if self.detect_pin_name:
             self._register_button(config)
+        elif config.get('on_tool_mounted_gcode', False) or config.get('on_tool_removed_gcode', False):
+            raise config.error('on_tool_mounted_gcode or on_tool_removed_gcode require tool detection')
         self.extruder_stepper_name = self._config_get(config, 'extruder_stepper', None)
         self.extruder = None
         self.extruder_stepper = None

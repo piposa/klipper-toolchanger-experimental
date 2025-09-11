@@ -537,6 +537,7 @@ class Toolchanger:
         if not self.has_detection:
             raise gcmd.error("VERIFY_TOOL_DETECTED needs tool detection to be set up.")
 
+        motion_queuing = self.printer.lookup_object('motion_queuing')
         toolhead = self.printer.lookup_object('toolhead')
         reactor  = self.printer.get_reactor()
 
@@ -575,7 +576,7 @@ class Toolchanger:
                     return
                 now     = reactor.monotonic()
                 mcu_now = toolhead.mcu.estimated_print_time(now)
-                fire_at = now + max(0.0, print_time + toolhead.kin_flush_delay - mcu_now)
+                fire_at = now + max(0.0, print_time + motion_queuing.get_kin_flush_delay() - mcu_now)
 
                 if self.validate_tool_timer is not None:
                     reactor.unregister_timer(self.validate_tool_timer)
@@ -588,7 +589,7 @@ class Toolchanger:
         else:
             # poll until detected, or 0.5 s after true motion end passes
             poll_s, timeout_s = 0.001, 0.5
-            anchor_pt = toolhead.get_last_move_time() + toolhead.kin_flush_delay  # print_time anchor
+            anchor_pt = toolhead.get_last_move_time() + motion_queuing.get_kin_flush_delay()  # print_time anchor
             eventtime = reactor.monotonic()
             deadline  = None  # reactor-time deadline set once MCU crosses anchor
 

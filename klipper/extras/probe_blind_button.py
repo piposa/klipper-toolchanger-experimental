@@ -1,7 +1,7 @@
 
 import logging
 
-TIMER_DT = 0.05
+TIMER_DT = 0.01
 
 class ProbeBlindButton:
     def __init__(self, printer, on_change, settle_time=2.0):
@@ -69,6 +69,11 @@ class ProbeBlindButton:
         if self._timer is None and new == old:
             return
         
+        if self._latched:
+            if new == old: # reverted back before settle: cancel, no emits
+                self._cancel_timer()
+                return
+
         if self._busy > 0 or self._session_busy():
             if not self._latched and new != old: # first change while busy: latch and start timer
                 self._latched = True
@@ -77,22 +82,13 @@ class ProbeBlindButton:
                     self._timer = self.reactor.register_timer(self._timer_cb)
                 self.reactor.update_timer(self._timer, now + TIMER_DT)
                 return
-
-            if self._latched:
-                if new == old: # reverted back before settle: cancel, no emits
-                    self._cancel_timer()
-                    return
-                # second, different change before settle while still busy:
-                # emit old->mid, then mid->new, then reset
-                if new != mid and new != old:
-                    self._on_change(old, mid)
-                    self._on_change(mid, new)
-                    self._stable_key = new
-                    self._cancel_timer()
-                    return
-            return
-
-        if self._latched:
+            # second, different change before settle while still busy:
+            # emit old->mid, then mid->new, then reset
+            if new != mid and new != old and self._latched:
+                self._on_change(old, mid)
+                self._on_change(mid, new)
+                self._stable_key = new
+                self._cancel_timer()
             return
 
         if new != old:

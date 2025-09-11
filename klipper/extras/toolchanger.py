@@ -593,7 +593,7 @@ class Toolchanger:
             eventtime = reactor.monotonic()
             deadline  = None  # reactor-time deadline set once MCU crosses anchor
 
-            while True:
+            while True: # ARE WE THERE YET;  ARE WE THERE YET;  ARE WE THERE YET;  ARE WE THERE YET;  ARE WE THERE YET
                 if self.detected_tool == expected:
                     self.validate_detected_tool(expected, respond_info=gcmd.respond_info, raise_error=gcmd.error)
                     return

@@ -33,3 +33,4 @@ bash ~/klipper-toolchanger/install.sh
 * [Heater power distributor](docs/heater_power_distributor.md) - dynamic heater group power limiting (toolheads for example)
 * [Sensorless auto tune](docs/sensorless_auto_tune.md) - automatically determines SGT/SGTHR values for your G28
 * [Tool drop detection](docs/tool_drop_detection.md) - continous polling of accelerometers, with peak/angle detection (tool dropped)
+* [Heater chamber fan](docs/heater_chamber_fan.md) - like a temperature_fan but it heats. automated chamber filter fan using bed as heater.

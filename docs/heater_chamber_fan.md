@@ -31,10 +31,10 @@ max_temp: 80                        # °C (> min_temp)
 control: pid                        # pid | watermark
 smooth_time: 2.0                    # s, temp smoothing before control
 
-min_power: 0.15                     # lower bound while controlling
-max_power: 0.80                     # upper bound
+min_power: 0.15                     # lower bound while controlling (wont go below this even if above temp)
+max_power: 0.80                     # upper bound (wont go above this duty even if below temp)
 
-gate_against: heater_bed
+gate_against: heater_bed            # default is heater_bed. just exists to prevent a TEMPERATURE_WAIT for something it physically cannot reach.
 gate_mode: target                   # target | current | either | None
 
 auto_linger: True                   # start linger when print finishes

@@ -26,7 +26,7 @@ wget -O - https://raw.githubusercontent.com/jwellman80/klipper-toolchanger-easy/
 
 Add the following to your `printer.cfg`
 ```
-[include toolchanger/toolchanger-include.cfg]
+[include toolchanger/readonly-configs/toolchanger-include.cfg]
 ```
 
 Optional, but recommended, add the following to your `moonraker.conf` to enable automatic updates:
@@ -52,7 +52,7 @@ bash ~/klipper-toolchanger-easy/install.sh
 At a minimum you will need to: 
 - Set the dock position for each tool in the `toolchanger/tools/Tx.cfg` file
 - look through the `toolchanger-config.cfg` and configure the following:
-  - `homing_override_config` (if used, if not then comment it out in the `toolchanger-include.cfg`)
+  - `homing_override_config` 
   - `_CALIBRATION_SWITCH` if using a calibration probe set its position here.  Also update the `tools_calibrate`
 
 Tool configs must be named Tx.cfg (T0.cfg, T1.cfg, etc)
@@ -73,9 +73,7 @@ Top of `print_start` macro
     {% set TOOL_TEMP = params.TOOL_TEMP | default(0) | int %}
     {% set BED_TEMP = params.BED_TEMP | default(0) | int %}
 
-    {% if printer["tool_probe_endstop"] is not defined %}
-        STOP_TOOL_PROBE_CRASH_DETECTION
-    {% endif %}
+    STOP_CRASH_DETECTION
 
     M117 Heating Bed
     M190 S{BED_TEMP}
@@ -101,9 +99,7 @@ Bottom of `print_start` macro:
         M109 S{TOOL_TEMP}
     {% endif %}
 
-    {% if printer["tool_probe_endstop"] is not defined %}
-        START_TOOL_PROBE_CRASH_DETECTION
-    {% endif %}
+    START_CRASH_DETECTION
     
 ```
 

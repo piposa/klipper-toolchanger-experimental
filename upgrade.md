@@ -18,6 +18,8 @@ This will create a `toolchanger` directory in `~/printer_data/configs`
 In each tool find where the partfan is assigned to the `[tool]` like:
 - `fan: fan_generic Tx_partfan` and remove the `fan_generic`.  Leaving `fan: Tx_partfan`
 
-In your `printer.cfg`, change `[include stealthchanger/toolchanger-include.cfg]` to `[include toolchanger/toolchanger-include.cfg]`
+In your `printer.cfg`, change `[include stealthchanger/toolchanger-include.cfg]` to `[include toolchanger/readonly-configs/toolchanger-include.cfg]`
+
+If you had additional includes in your toolchanger-include.cfg those will need to move somewhere else now.
 
 Once you have verified everything is working you can remove the `stealthchanger` folder. 

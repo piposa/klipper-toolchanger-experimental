@@ -150,6 +150,7 @@ class Toolchanger:
 
     def _handle_ready(self):
         self.is_printer_ready = True
+        self.note_detect_change(None)
 
     def get_status(self, eventtime):
         return {**self.params,
@@ -487,6 +488,8 @@ class Toolchanger:
         return self.active_tool
 
     def note_detect_change(self, _tool=None):
+        if not self.is_printer_ready:
+            return
         detected = None
         detected_names = []
         for t in self.tools.values():
@@ -501,7 +504,7 @@ class Toolchanger:
         self._det_btn.note_change(detected)
 
     def _on_probe_blinded_change(self, last, new):
-        if not self.is_printer_ready or self.status in (STATUS_CHANGING, STATUS_INITIALIZING):
+        if self.status in (STATUS_CHANGING, STATUS_INITIALIZING):
             return
         if new:
             self.run_gcode('on_tool_mounted_gcode', new.on_tool_mounted_gcode, {'detected_tool': new, 'removed_tool': None})

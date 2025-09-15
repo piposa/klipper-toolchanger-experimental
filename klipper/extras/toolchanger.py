@@ -78,6 +78,8 @@ class Toolchanger:
         self._det_btn = ProbeBlindButton(self.printer, on_change=self._on_probe_blinded_change)
 
         self.is_printer_ready = False 
+        self._ready_timer = None
+
         self.status = STATUS_UNINITALIZED
         self.active_tool = None
         self.detected_tool = None
@@ -146,11 +148,24 @@ class Toolchanger:
     def _handle_shutdown(self):
         self.status = STATUS_UNINITALIZED
         self.active_tool = None
-        self.is_printer_ready = False  
+        self.is_printer_ready = False
+        r = self.printer.get_reactor()
+        if self._ready_timer is not None:
+            r.update_timer(self._ready_timer, r.NEVER)
+            self._ready_timer = None
 
     def _handle_ready(self):
-        self.is_printer_ready = True
-        self.note_detect_change(None)
+        def _ready_after_delay(eventtime):
+            self.is_printer_ready = True
+            try:
+                self.note_detect_change(None)
+            except Exception:
+                pass
+            self._ready_timer = None
+            return self.printer.get_reactor().NEVER
+        r = self.printer.get_reactor()
+        if self._ready_timer is None:
+            self._ready_timer = r.register_timer(_ready_after_delay, r.monotonic() + 0.1)
 
     def get_status(self, eventtime):
         return {**self.params,

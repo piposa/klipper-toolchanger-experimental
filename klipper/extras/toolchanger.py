@@ -157,10 +157,11 @@ class Toolchanger:
     def _handle_ready(self):
         def _ready_after_delay(eventtime):
             self.is_printer_ready = True
-            try:
-                self.note_detect_change(None)
-            except Exception:
-                pass
+            if self.has_detection:
+                try:
+                    self.note_detect_change(None)
+                except Exception:
+                    pass
             self._ready_timer = None
             return self.printer.get_reactor().NEVER
         r = self.printer.get_reactor()
@@ -198,6 +199,7 @@ class Toolchanger:
             raise self.config.error("Some tools missing detection pin")
         elif not self.has_detection and (self.config.get('on_tool_mounted_gcode', False) or \
                                         self.config.get('on_tool_removed_gcode', False)):
+            #TODO dont raise config error at runtime!
             raise self.config.error('on_tool_mounted_gcode or on_tool_removed_gcode require tool detection')
         
     cmd_INITIALIZE_TOOLCHANGER_help = "Initialize the toolchanger"
@@ -324,9 +326,11 @@ class Toolchanger:
                 else:
                     raise self.gcode.error('%s failed to initialize, error: %s' %
                                         (self.name, self.error_message))
-        finally:
-            if self.status == STATUS_INITIALIZING:
-                self.status = STATUS_UNINITALIZED
+        except Exception as e:
+            self.error_message = str(e)
+            self.status = STATUS_UNINITALIZED
+            raise self.gcode.error('%s failed to initialize, error: %s' % (self.name, str(e))) from e
+
 
     def select_tool(self, gcmd, tool, restore_axis):
         if self.status == STATUS_UNINITALIZED and self.initialize_on == INIT_FIRST_USE:
@@ -519,7 +523,7 @@ class Toolchanger:
         return self.active_tool
 
     def note_detect_change(self, _tool=None):
-        if not self.is_printer_ready:
+        if not self.is_printer_ready or not self.has_detection:
             return
         detected = None
         detected_names = []

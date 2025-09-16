@@ -157,10 +157,11 @@ class Toolchanger:
     def _handle_ready(self):
         def _ready_after_delay(eventtime):
             self.is_printer_ready = True
-            try:
-                self.note_detect_change(None)
-            except Exception:
-                pass
+            if self.has_detection:
+                try:
+                    self.note_detect_change(None)
+                except Exception:
+                    pass
             self._ready_timer = None
             return self.printer.get_reactor().NEVER
         r = self.printer.get_reactor()
@@ -519,7 +520,7 @@ class Toolchanger:
         return self.active_tool
 
     def note_detect_change(self, _tool=None):
-        if not self.is_printer_ready:
+        if not self.is_printer_ready or not self.has_detection:
             return
         detected = None
         detected_names = []

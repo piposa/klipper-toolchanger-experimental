@@ -336,8 +336,7 @@ class Toolchanger:
                 "Cannot select tool, toolchanger status is %s, reason: %s" % (self.status, self.error_message))
 
         if self.active_tool == tool:
-            gcmd.respond_info(
-                'Tool %s already selected' % tool.name if tool else None)
+            gcmd.respond_info('%s already selected' % tool.name if tool else None)
             return
         this_change_id = self.next_change_id
         self.next_change_id += 1
@@ -356,24 +355,38 @@ class Toolchanger:
             # To solve that, during toolchange Gcode offsets are set to zero and the gcode moves directly work with toolhead position.
             # And nozzle location will deviate for each tool.
             #
-            # To restore the new tool's nozzle to where the previous tool left off, the restore position is manually computed in the code below.
+            # To restore the new tool's nozzle to where the previous tool left off, the restore position is manually computed below.
             gcode_status = self.gcode_move.get_status()
-            gcode_position = gcode_status['gcode_position']
-            current_z_offset = gcode_status['homing_origin'][2] # Current Z offset applied; Contains both the tool offset plus any manual changes by the user.
+            gcode_position = gcode_status['gcode_position']  # list [X, Y, Z, E]
+            restore_gcode_position = list(gcode_position)    # copy it
+            current_z_offset = gcode_status['homing_origin'][2]
             extra_z_offset = current_z_offset - (self.active_tool.gcode_z_offset if self.active_tool else 0.0)
 
-            self.last_change_gcode_position = gcode_position
-            self.last_change_start_position = self._position_to_xyz(gcode_position, 'xyz')
-            self.last_change_restore_position = self._position_to_xyz(gcode_position, restore_axis)
-            self.last_change_restore_axis = restore_axis
-            self.last_change_extra_z_offset = extra_z_offset
-            self.last_change_pickup_tool = tool
+            # Read optional XYZ overrides
+            overrides = {ax: gcmd.get_float(ax, None) for ax in 'XYZ'}
+            overrides = {ax: v for ax, v in overrides.items() if v is not None}
+
+            if overrides: # If provided, augment restore_axis with those axes
+                existing = (restore_axis or '').lower()
+                provided = ''.join(a for a in 'xyz' if overrides.get(a.upper()) is not None)
+                restore_axis = ''.join(a for a in 'xyz' if (a in existing) or (a in provided))   
+                for ax, val in overrides.items(): # Apply the overrides to the restore position
+                    restore_gcode_position[XYZ_TO_INDEX[ax]] = val
+
+            self.last_change_gcode_position   = gcode_position
+            self.last_change_start_position   = self._position_to_xyz(gcode_position,         'xyz')
+            self.last_change_restore_position = self._position_to_xyz(restore_gcode_position, restore_axis)
+            self.last_change_restore_axis     = restore_axis
+            self.last_change_extra_z_offset   = extra_z_offset
+            self.last_change_pickup_tool      = tool
 
             extra_context = {
                 'dropoff_tool': self.active_tool.name if self.active_tool else None,
-                'pickup_tool': tool.name if tool else None,
-                'start_position': self._position_with_tool_offset(gcode_position, 'xyz', tool, extra_z_offset),
-                'restore_position': self._position_with_tool_offset(gcode_position, restore_axis, tool, extra_z_offset),
+                'pickup_tool':  tool.name if tool else None,
+                'start_position':   self._position_with_tool_offset(gcode_position, 'xyz',
+                                                                    tool, extra_z_offset),
+                'restore_position': self._position_with_tool_offset(restore_gcode_position, restore_axis,
+                                                                    tool, extra_z_offset),
             }
 
             self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=_toolchange_state")
@@ -397,25 +410,25 @@ class Toolchanger:
 
             force_restore = tool.perform_restore_move if tool is not None else self.perform_restore_move
             if force_restore:
-                self._restore_axis(gcode_position, restore_axis, tool, extra_z_offset)
+                self._restore_axis(restore_gcode_position, restore_axis, tool, extra_z_offset)
 
             self.gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
             
             if tool is not None:    # Restore state sets old gcode offsets, fix that.
                 self._set_tool_gcode_offset(tool, extra_z_offset)
-            else:                   # Unselect: remove tool offset but global z
+            else:                   # Unselect: remove tool offset but keep global Z
                 self.gcode.run_script_from_command(f"SET_GCODE_OFFSET X=0.0 Y=0.0 Z={extra_z_offset:.6f}")
+
             self.status = STATUS_READY
             if tool:
-                gcmd.respond_info(
-                    'Selected tool %s (%s)' % (str(tool.tool_number), tool.name))
+                gcmd.respond_info('Selected tool %s (%s)' % (str(tool.tool_number), tool.name))
             else:
                 gcmd.respond_info('Tool unselected')
             self.current_change_id = -1
+
         except gcmd.error as e:
             if self.status == STATUS_ERROR:
-                # pass
-                raise # The error handling did happen, we can continue
+                raise  # already handled upstream
             else:
                 self.current_change_id = -1
                 raise # This was not handled, abort.

@@ -40,11 +40,11 @@ class Tool:
         self.params = {**self.toolchanger.params, **toolchanger.get_params_dict(config)}
         self.original_params = {}
         self.extruder_name = self._config_get(config, 'extruder', None)
-        self.detect_pin_name = config.get('detection_pin', None)
-        self.detect_state    = toolchanger.DETECT_UNAVAILABLE
-        self.flip_detect_state = True
-        if self.detect_pin_name:
-            self._register_button(config)
+        self.detect_state       = toolchanger.DETECT_UNAVAILABLE
+        self.flip_detect_state  = True
+        _detect_pin_name = config.get('detection_pin', None)
+        if _detect_pin_name:
+            self._register_button(config, _detect_pin_name)
         self.extruder_stepper_name = self._config_get(config, 'extruder_stepper', None)
         self.extruder = None
         self.extruder_stepper = None
@@ -84,17 +84,29 @@ class Tool:
         
     # were the cuck here in registering the pin. we know what we want, but we have to check first if someone flipped it.
     # this covers all 4 scenarios automatically, double assigned equal, double assigned equal and not equal, different first, different last.
-    def _register_button(self, config):
+    def _register_button(self, config, detect_pin_name):
         ppins = self.printer.lookup_object('pins')
-        detect_param = ppins.parse_pin(self.detect_pin_name, can_invert=True, can_pullup=True)
-        base_name = f"{detect_param['chip_name']}:{detect_param['pin']}"
-        ppins.allow_multi_use_pin(base_name)
+        p = ppins.parse_pin(detect_pin_name, can_invert=True, can_pullup=True)
+        base = f"{p['chip_name']}:{p['pin']}"
+        ppins.allow_multi_use_pin(base)
+        prev = ppins.active_pins.get(base)
+        if prev is None: # If were first, register non inverted.
+            actual_inv  = 0
+            actual_pull = p.get('pullup', 0)
+        else: # if were not. respect the previous one.
+            actual_inv  = prev.get('invert', 0)
+            actual_pull = prev.get('pullup', 0)
+        dec = ''
+        if   actual_pull == 1:  dec += '^'
+        elif actual_pull == -1: dec += '~'
+        if actual_inv:          dec += '!'
+        reg = f"{dec}{base}"
         buttons = self.printer.load_object(config, 'buttons')
-        buttons.register_buttons([base_name], self._handle_detect)
-        _flip = ('!' in self.detect_pin_name) ^ bool(detect_param['invert'])
-        self.flip_detect_state = self.flip_detect_state ^ _flip
-        self.detect_state = toolchanger.DETECT_PRESENT if self.flip_detect_state else toolchanger.DETECT_ABSENT
-        
+        buttons.register_buttons([reg], self._handle_detect)
+        self.flip_detect_state = config.getboolean('flip_detect', False) ^ bool(actual_inv) ^ bool(p.get('invert', 0))
+        self.detect_state = (toolchanger.DETECT_PRESENT if self.flip_detect_state else toolchanger.DETECT_ABSENT)
+
+
     def get_status(self, eventtime):
         return {**self.params,
                 'name': self.name,

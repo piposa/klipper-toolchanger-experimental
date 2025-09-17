@@ -93,10 +93,7 @@ class ProbeBlindButton:
 
         if new != old:
             self._stable_key = new
-            try:
-                self._on_change(old, new)
-            except Exception:
-                logging.exception('exception in ProbeBlindButton callback')
+            self._on_change(old, new)
 
     # timers
 

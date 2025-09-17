@@ -37,7 +37,7 @@ class ProbeBlindButton:
     def _on_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         prb = self.printer.lookup_object('probe', None)
-        self._probe_session = prb.probe_session if prb else None
+        self._probe_session = getattr(prb, 'probe_session', None) if prb else None
 
     def _session_busy(self):
         ps = self._probe_session

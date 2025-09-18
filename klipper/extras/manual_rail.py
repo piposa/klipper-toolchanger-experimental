@@ -56,7 +56,11 @@ class ManualRail:
         self.sync_print_time()
 
     def do_set_position(self, setpos):
-        self.rail.set_position([setpos, 0., 0.])
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.flush_step_generation()
+        self.commanded_pos = setpos
+        self.rail.set_position([self.commanded_pos, 0., 0.])
+
 
     def do_move(self, movepos, speed, accel, sync=True):
         self.sync_print_time()

@@ -61,7 +61,6 @@ class ManualRail:
         self.commanded_pos = setpos
         self.rail.set_position([self.commanded_pos, 0., 0.])
 
-
     def do_move(self, movepos, speed, accel, sync=True):
         self.sync_print_time()
         cp = self.rail.get_commanded_position()

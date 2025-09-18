@@ -3,7 +3,7 @@
 # Copyright (C) 2019-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import stepper
+import stepper, chelper
 from . import force_move
 
 # Like ManualStepper, but is a multi stepper rail with min/max and homing.
@@ -21,20 +21,20 @@ class ManualRail:
         self.velocity = config.getfloat('velocity', 5., above=0.)
         self.accel = self.homing_accel = config.getfloat('accel', 0., minval=0.)
         self.next_cmd_time = 0.
-        # Setup iterative solver (use motion_queuing like manual_stepper)
-        self.motion_queuing = self.printer.load_object(config, 'motion_queuing')
-        self.trapq = self.motion_queuing.allocate_trapq()
-        self.trapq_append = self.motion_queuing.lookup_trapq_append()
-
+        # Setup iterative solver
+        ffi_main, ffi_lib = chelper.get_ffi()
+        self.rail.motion_queuing = self.printer.load_object(config, 'motion_queuing')
+        self.rail.trapq = self.rail.motion_queuing.allocate_trapq()
+        self.rail.trapq_append = self.rail.motion_queuing.lookup_trapq_append()
+        #self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
         self.rail.setup_itersolve('cartesian_stepper_alloc', b'x')
-        self.rail.set_trapq(self.trapq)
+        self.rail.set_trapq(self.rail.trapq)
         # Register commands
         rail_name = config.get_name().split()[1]
         gcode = self.printer.lookup_object('gcode')
         gcode.register_mux_command('MANUAL_RAIL', "RAIL",
                                    rail_name, self.cmd_MANUAL_RAIL,
                                    desc=self.cmd_MANUAL_RAIL_help)
-
     def sync_print_time(self):
         toolhead = self.printer.lookup_object('toolhead')
         print_time = toolhead.get_last_move_time()
@@ -42,8 +42,8 @@ class ManualRail:
             toolhead.dwell(self.next_cmd_time - print_time)
         else:
             self.next_cmd_time = print_time
-
     def do_enable(self, enable):
+        self.sync_print_time()
         stepper_enable = self.printer.lookup_object('stepper_enable')
         if enable:
             for s in self.steppers:
@@ -54,26 +54,33 @@ class ManualRail:
                 se = stepper_enable.lookup_enable(s.get_name())
                 se.motor_disable(self.next_cmd_time)
         self.sync_print_time()
-
     def do_set_position(self, setpos):
         self.rail.set_position([setpos, 0., 0.])
-
     def do_move(self, movepos, speed, accel, sync=True):
         self.sync_print_time()
         cp = self.rail.get_commanded_position()
         dist = movepos - cp
+        prev_trapq = self.rail.set_trapq(self.rail.trapq)
         axis_r, accel_t, cruise_t, cruise_v = force_move.calc_move_time(
             dist, speed, accel)
-        self.trapq_append(self.trapq, self.next_cmd_time,
+        
+        self.rail.trapq_append(self.rail.trapq, self.next_cmd_time,
                           accel_t, cruise_t, accel_t,
                           cp, 0., 0., axis_r, 0., 0.,
                           0., cruise_v, accel)
-        self.next_cmd_time += accel_t + cruise_t + accel_t
-        # Let motion_queuing handle generation/finalize/flush
-        self.motion_queuing.note_mcu_movequeue_activity(self.next_cmd_time)
+        self.next_cmd_time = self.next_cmd_time + accel_t + cruise_t + accel_t
+        #self.rail.generate_steps(self.next_cmd_time)
+        
+        self.rail.motion_queuing.note_mcu_movequeue_activity(self.next_cmd_time) 
+        self.dwell(accel_t + cruise_t + accel_t)
+        self.flush_step_generation()
+        self.rail.set_trapq(prev_trapq)
+        self.rail.motion_queuing.wipe_trapq(self.rail.trapq)
+        #raise self.printer.command_error('Start moving')
+        #self.trapq_finalize_moves(self.trapq, self.next_cmd_time + 99999.9,
+        #                         self.next_cmd_time + 99999.9)
         if sync:
             self.sync_print_time()
-
     def do_homing_move(self, accel):
         if not self.can_home:
             raise self.printer.command_error(
@@ -97,7 +104,6 @@ class ManualRail:
             self.do_move(hi.position_endstop + retract_dist, hi.speed, accel)
             self.do_set_position(hi.position_endstop + retract_dist * 1.5)
             phoming.manual_home(self, endstops, pos, hi.second_homing_speed, True, True)
-
     cmd_MANUAL_RAIL_help = "Command a manually configured rail"
     def cmd_MANUAL_RAIL(self, gcmd):
         enable = gcmd.get_int('ENABLE', None)
@@ -131,47 +137,22 @@ class ManualRail:
 
     # Toolhead wrappers to support homing
     def flush_step_generation(self):
-        toolhead = self.printer.lookup_object('toolhead')
-        toolhead.flush_step_generation()
-
+        self.sync_print_time()
     def get_position(self):
         return [self.rail.get_commanded_position(), 0., 0., 0.]
-
     def set_position(self, newpos, homing_axes=()):
         self.do_set_position(newpos[0])
-
     def get_last_move_time(self):
         self.sync_print_time()
         return self.next_cmd_time
-
     def dwell(self, delay):
         self.next_cmd_time += max(0., delay)
-
     def drip_move(self, newpos, speed, drip_completion):
-        # Homing drip: submit move, drip time, then wipe the trapq
-        self.sync_print_time()
-        start_time = self.next_cmd_time
-        cp = self.rail.get_commanded_position()
-        dist = newpos[0] - cp
-        axis_r, accel_t, cruise_t, cruise_v = force_move.calc_move_time(
-            dist, speed, self.homing_accel)
-        self.trapq_append(self.trapq, start_time,
-                          accel_t, cruise_t, accel_t,
-                          cp, 0., 0., axis_r, 0., 0.,
-                          0., cruise_v, self.homing_accel)
-        end_time = start_time + accel_t + cruise_t + accel_t
-        self.motion_queuing.drip_update_time(start_time, end_time, drip_completion)
-        self.motion_queuing.wipe_trapq(self.trapq)
-        self.rail.set_position([newpos[0], 0., 0.])
-        self.next_cmd_time = end_time
-        self.sync_print_time()
-
+        self.do_move(newpos[0], speed, self.homing_accel)
     def get_kinematics(self):
         return self
-
     def get_steppers(self):
         return self.steppers
-
     def calc_position(self, stepper_positions):
         return [stepper_positions[self.rail.get_name()], 0., 0.]
 

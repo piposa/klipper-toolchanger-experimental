@@ -3,7 +3,7 @@
 # Copyright (C) 2019-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import stepper
+import stepper, chelper
 from . import force_move
 
 # Like ManualStepper, but is a multi stepper rail with min/max and homing.
@@ -22,9 +22,11 @@ class ManualRail:
         self.accel = self.homing_accel = config.getfloat('accel', 0., minval=0.)
         self.next_cmd_time = 0.
         # Setup iterative solver
+        ffi_main, ffi_lib = chelper.get_ffi()
         self.rail.motion_queuing = self.printer.load_object(config, 'motion_queuing')
         self.rail.trapq = self.rail.motion_queuing.allocate_trapq()
         self.rail.trapq_append = self.rail.motion_queuing.lookup_trapq_append()
+        #self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
         self.rail.setup_itersolve('cartesian_stepper_alloc', b'x')
         self.rail.set_trapq(self.rail.trapq)
         # Register commands

@@ -107,17 +107,20 @@ class SensorlessAutoTune:
             self.toolhead.set_position(post, homing_axes=pre_homed_axes)
 
         targets = list(post) # subtract the full measured delta in tool space
-        for i in range(len(targets)):
-            di = float(dvec[i] or 0.0)
+        for i, di_raw in enumerate(dvec):
+            if i >= len(targets):
+                break
+            di = float(di_raw or 0.0)
             targets[i] = float(post[i] - di)
 
-        for i in range(len(targets)): # per-axis range check only when we actually change that axis
+        for i in range(min(len(targets), len(dvec))): # per-axis range check only when we actually change that axis
             if abs(targets[i] - post[i]) > 1e-9:
                 rmin, rmax = self.kin.rails[i].get_range()
                 if not (rmin <= targets[i] <= rmax):
+                    di = float(dvec[i] or 0.0)
                     raise gcmd.error(
                         "internal error: cannot restore axis %d: %.2f <= %.2f <= %.2f (dvec: %.3f, post: %.3f)"
-                        % (i, rmin, targets[i], rmax, dvec[i], post[i])
+                        % (i, rmin, targets[i], rmax, di, post[i])
                     )
         # move back in one shot
         hi = self.kin.rails[AXES[axis]].get_homing_info()
@@ -372,4 +375,3 @@ class AxisStallGuard:
 
 def load_config(config):
     return SensorlessAutoTune(config)
-

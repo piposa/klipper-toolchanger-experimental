@@ -235,6 +235,12 @@ class PrinterHeaterChamberFan:
         self.manual_override = False
         self.target_temp = float(temp)
 
+        r = self.printer.get_reactor()
+        if self._timer:
+            r.update_timer(self._timer, r.monotonic() + PIN_MIN_TIME)
+        self.linger_end_time = 0.0
+        self.state = 'active' if self.target_temp > 0.0 else 'idle'
+
         if wait and self.target_temp > 0.0:
             if not self._gating_allows_wait(self.target_temp):
                 gcmd.respond_info("CHAMBER_FAN %s: skipping WAIT (gate=%s against %s not satisfied)" % (self.short_name, self.gate_mode, self.gate_against))

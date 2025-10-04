@@ -5,6 +5,18 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from . import probe
 
+if not all(hasattr(probe, attr) for attr in (
+    'ProbeParameterHelper',
+    'ProbeSessionHelper',
+    'HomingViaProbeHelper',
+    'ProbeCommandHelper')):
+    try:
+        from .kalico_compat import ensure_probe_backports
+    except ImportError:
+        pass
+    else:
+        ensure_probe_backports(probe)
+
 # Virtual endstop, using a tool attached Z probe in a toolchanger setup.
 # Tool endstop change may be done either via SET_ACTIVE_TOOL_PROBE TOOL=99
 # Or via auto-detection of single open tool probe via DETECT_ACTIVE_TOOL_PROBE

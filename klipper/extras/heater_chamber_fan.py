@@ -40,6 +40,18 @@ class _HeaterShim:
     def set_pwm(self, read_time, value):
         self._parent._apply_output(value)
 
+    # kalico compat
+    def set_inv_smooth_time(self, inv):
+        if inv and inv > 0.0:
+            self._parent.inv_smooth_time = inv
+            self._smooth_time = 1.0 / inv
+
+    def get_temp(self, eventtime):
+        return self._parent.get_temp(eventtime)
+
+    @property
+    def reactor(self):
+        return self._parent.printer.get_reactor()
 
 class PrinterHeaterChamberFan:
     """Temperature‑controlled chamber fan with optional post‑print linger."""
@@ -105,7 +117,25 @@ class PrinterHeaterChamberFan:
         # Control loop wiring
         self._last_printing = False
         self._heater_shim = _HeaterShim(self, max_power=self.max_power, smooth_time=self.smooth_time)
-        self.controller = self.control_mode(self._heater_shim, config)
+        try: # klipper
+            self.controller = self.control_mode(self._heater_shim, config)
+
+        except AttributeError: # Kalico signature: (profile, heater, load_clean)
+            if self.control_mode is ControlBangBang:
+                _profile = {
+                    'control': 'watermark',
+                    'max_delta': config.getfloat('max_delta', 2.0),
+                    'smooth_time': None,
+                }
+            else:
+                _profile = {
+                    'control': 'pid',
+                    'pid_kp': config.getfloat('pid_kp'),
+                    'pid_ki': config.getfloat('pid_ki'),
+                    'pid_kd': config.getfloat('pid_kd'),
+                    'smooth_time': None,
+                }
+            self.controller = self.control_mode(_profile, self._heater_shim, True)
         self.timer_period = 0.2
         self._timer = None
 

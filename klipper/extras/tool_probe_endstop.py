@@ -37,6 +37,7 @@ class ToolProbeEndstop:
         self.homing_helper = probe.HomingViaProbeHelper(config, self.mcu_probe, self.param_helper)
         self.probe_session = probe.ProbeSessionHelper(config, self.param_helper, self.homing_helper.start_probe_session)
         self.cmd_helper = probe.ProbeCommandHelper(config, self, self.mcu_probe.query_endstop)
+        self._active_session = None
 
         # Emulate the probe object, since others rely on this.
         if self.printer.lookup_object('probe', default=None):
@@ -72,10 +73,48 @@ class ToolProbeEndstop:
             return self.active_probe.get_probe_params(gcmd)
         raise self.printer.command_error("No active tool probe")
     
+    def get_lift_speed(self, gcmd=None):
+        if self.active_probe:
+            return self.active_probe.get_probe_params(gcmd)['lift_speed']
+        return self.param_helper.get_probe_params(gcmd)['lift_speed']
+
     def start_probe_session(self, gcmd):
         if self.active_probe:
             return self.active_probe.start_probe_session(gcmd)
         raise self.printer.command_error("No active tool probe")
+
+    def _ensure_active_probe(self, gcmd=None):
+        if self.active_probe:
+            return
+        if gcmd is None:
+            gcode = self.printer.lookup_object('gcode')
+            gcmd = gcode.create_gcode_command("", "", {})
+        self._ensure_active_tool_or_fail(gcmd)
+
+    def multi_probe_begin(self, *args, **kwargs):
+        self._ensure_active_probe()
+        self._active_session = None
+
+    def _get_session(self, gcmd):
+        self._ensure_active_probe(gcmd)
+        if self._active_session is None:
+            self._active_session = self.active_probe.start_probe_session(gcmd)
+        return self._active_session
+
+    def run_probe(self, gcmd):
+        session = self._get_session(gcmd)
+        session.run_probe(gcmd)
+        results = session.pull_probed_results()
+        if not results:
+            raise self.printer.command_error("Probe did not report a result")
+        return results[-1]
+
+    def multi_probe_end(self):
+        if self._active_session is not None:
+            try:
+                self._active_session.end_probe_session()
+            finally:
+                self._active_session = None
 
     def add_probe(self, config, tool_probe):
         if (tool_probe.tool in self.tool_probes):
@@ -95,6 +134,7 @@ class ToolProbeEndstop:
             self.mcu_probe.set_active_mcu(None)
             self.active_tool_number = -1
             self.cmd_helper.name = self.name
+        self._active_session = None
 
     def _query_open_tools(self, tool_number=None):
         if tool_number is not None and tool_number not in self.tool_probes:

@@ -147,8 +147,15 @@ class ToolProbeEndstop:
         def _query_probes(now):
             candidates = []
             for tool_probe in self.tool_probes.values():
-                mcu_now = tool_probe.mcu_probe.get_mcu().estimated_print_time(now)
-                triggered = tool_probe.mcu_probe.query_endstop(mcu_now)
+                mcu_probe = tool_probe.mcu_probe
+                mcu = mcu_probe.get_mcu()
+                endstop = getattr(mcu_probe, "mcu_endstop", None)
+                if (getattr(mcu, "non_critical_disconnected", False)
+                    or endstop is None
+                    or getattr(endstop, "_query_cmd", None) is None):
+                    continue
+                mcu_now = mcu.estimated_print_time(now)
+                triggered = mcu_probe.query_endstop(mcu_now)
                 self.last_query[tool_probe.tool] = triggered
                 if not triggered:
                     candidates.append(tool_probe)

@@ -4,6 +4,10 @@ Aimed to be **fully compatible** with the original `klipper-toolchanger`.
 Just offering more features, extras, and options to expand upon.  
 Basically, the "assortment of Klipper extensions" from viesturz, with the "assortment of Klipper extensions" from me.
 
+## Kalico status
+* toolchanger, tool probes, calibration rounded path and the extras are all crosscompatible between kalico and klipper
+* manual rail is untested and will likely break on kalico
+
 ## Installation
 
 To install this plugin, run the installation script using the following command over SSH. This script will download this GitHub repository to your RaspberryPi home directory, and symlink the files in the Klipper extra folder.

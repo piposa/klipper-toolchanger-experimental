@@ -1,7 +1,9 @@
+import logging
+
 from . import fan
 from .heaters import ControlPID, ControlBangBang
 
-PIN_MIN_TIME = 0.100  # delay before first control tick
+PIN_MIN_TIME = fan.FAN_MIN_TIME
 
 
 class _FanConfigProxy:
@@ -38,7 +40,7 @@ class _HeaterShim:
         return self._smooth_time
 
     def set_pwm(self, read_time, value):
-        self._parent._apply_output(value)
+        self._parent._apply_output(value, read_time)
 
     # kalico compat
     def set_inv_smooth_time(self, inv):
@@ -190,7 +192,30 @@ class PrinterHeaterChamberFan:
             return cur >= target
         return tgt >= target or cur >= target
 
-    def _apply_output(self, controller_out):
+    def _reset_control_state(self):
+        """Reset PID state when (re)activating the controller."""
+        if not hasattr(self, 'controller'):
+            return
+        now = self.printer.get_reactor().monotonic()
+        # Prefer the most recent raw reading; fall back to smoothed value
+        current_temp = self.last_temp or self.smoothed_temp
+        if not current_temp and self.target_temp:
+            current_temp = self.target_temp
+        self.last_temp = current_temp
+        self.smoothed_temp = current_temp
+        self.last_temp_time = now
+
+        ctrl = self.controller
+        if hasattr(ctrl, 'prev_temp'):
+            ctrl.prev_temp = current_temp
+        if hasattr(ctrl, 'prev_temp_time'):
+            ctrl.prev_temp_time = now
+        if hasattr(ctrl, 'prev_temp_deriv'):
+            ctrl.prev_temp_deriv = 0.0
+        if hasattr(ctrl, 'prev_temp_integ'):
+            ctrl.prev_temp_integ = 0.0
+
+    def _apply_output(self, controller_out, eventtime=None):
         """Enforce limits and semantics"""
         duty = max(0.0, min(self.max_power, float(controller_out)))
         if not self.manual_override and self.state == 'active' and self.target_temp > 0.0:
@@ -200,7 +225,11 @@ class PrinterHeaterChamberFan:
             duty = 0.0
         if duty != self.last_fan_speed:
             self.last_fan_speed = duty
-            self.fan.set_speed(duty)
+            if eventtime is None:
+                eventtime = self.printer.get_reactor().monotonic()
+            # Convert reactor time to the MCU print_time domain before issuing PWM
+            print_time = self.fan.get_mcu().estimated_print_time(eventtime)
+            self.fan.set_speed(print_time + PIN_MIN_TIME, duty)
 
     def _callback(self, eventtime):
         try:
@@ -220,9 +249,9 @@ class PrinterHeaterChamberFan:
                 if eventtime >= self.linger_end_time:
                     self.state = 'idle'
                     self.target_temp = 0.0
-                    self._apply_output(0.0)
+                    self._apply_output(0.0, eventtime)
                 else:
-                    self._apply_output(self.linger_power)
+                    self._apply_output(self.linger_power, eventtime)
                 return eventtime + self.timer_period
 
             if self.target_temp > 0.0:
@@ -230,14 +259,15 @@ class PrinterHeaterChamberFan:
                 self.controller.temperature_update(eventtime, self.smoothed_temp, self.target_temp)
             else:
                 self.state = 'idle'
-                self._apply_output(0.0)
+                self._apply_output(0.0, eventtime)
 
             return eventtime + self.timer_period
 
         except Exception:
             # Fail safe: stop driving and stop the timer
+            logging.exception("heater_chamber_fan %s callback error", self.short_name)
             try:
-                self._apply_output(0.0)
+                self._apply_output(0.0, eventtime)
             except Exception:
                 pass
             return self.printer.get_reactor().NEVER
@@ -245,10 +275,15 @@ class PrinterHeaterChamberFan:
     # ---- Public heater-like interface --------------------------------------------
     def get_status(self, eventtime):
         linger_left = max(0.0, self.linger_end_time - eventtime)
+        fan_status = self.fan.get_status(eventtime)
+        fan_value = float(fan_status.get('value', self.last_fan_speed))
+        fan_power = float(fan_status.get('power', self.last_fan_speed))
         return {
             'temperature': round(self.smoothed_temp, 2),
             'target': float(self.target_temp),
-            'power': float(self.last_fan_speed),
+            'power': fan_power,
+            'value': fan_value,
+            'fan_speed': fan_value,
             'state': self.state,
             'linger_time_left': round(linger_left, 2) if self.state == 'linger' else 0.0,
         }
@@ -260,6 +295,7 @@ class PrinterHeaterChamberFan:
     def cmd_SET_HEATER_TEMPERATURE(self, gcmd):
         temp = gcmd.get_float('TARGET', 0.0)
         wait = gcmd.get_int('WAIT', 0, minval=0, maxval=1)
+        previous_target = self.target_temp
         if temp and (temp < self.min_temp or temp > self.max_temp):
             raise gcmd.error("Requested temperature (%.1f) out of range (%.1f:%.1f)" % (temp, self.min_temp, self.max_temp))
         self.manual_override = False
@@ -270,6 +306,9 @@ class PrinterHeaterChamberFan:
             r.update_timer(self._timer, r.monotonic() + PIN_MIN_TIME)
         self.linger_end_time = 0.0
         self.state = 'active' if self.target_temp > 0.0 else 'idle'
+
+        if self.target_temp > 0.0 and previous_target <= 0.0:
+            self._reset_control_state()
 
         if wait and self.target_temp > 0.0:
             if not self._gating_allows_wait(self.target_temp):
@@ -310,7 +349,7 @@ class PrinterHeaterChamberFan:
             raise gcmd.error('SET_FAN_SPEED TEMPLATE is not supported on heater_chamber_fan')
         self.target_temp = 0.0
         self.manual_override = True
-        self._apply_output(speed)
+        self._apply_output(speed, self.printer.get_reactor().monotonic())
 
 
 def load_config_prefix(config):

@@ -46,18 +46,43 @@ class WeightPlan:
 
 class HeaterRec:
     """Per-heater runtime record"""
-    def __init__(self, heater, rated_watt, orig_max_power, vh, vh_params):
+    def __init__(self, heater, rated_watt, vh, vh_params):
         self.heater = heater
         self.rated_watt = rated_watt
-        self.orig_max_power = orig_max_power
         self.vh = vh
         self.vh_params = vh_params  # (hg, cgt, hyst)
+        self.control_id = None
+        self.control_type = None
+        self.is_watt_mode = False
+        self.orig_max_power = 1.0
         # evolving samples
         self.prev_temp = None
         self.prev_time = None
         self.prev_target = None
         self.last_target_change = 0.0
         self.slope_ema = None
+        self.update_control_info(heater.control)
+
+    def update_control_info(self, control):
+        self.control_id = id(control)
+        get_type = getattr(control, 'get_type', None)
+        try:
+            control_type = get_type() if callable(get_type) else None
+        except Exception:
+            control_type = None
+        self.control_type = control_type
+        self.is_watt_mode = control_type == 'mpc'
+        default = self.rated_watt if self.is_watt_mode else 1.0
+        value = getattr(control, 'heater_max_power', default)
+        try:
+            value = float(value)
+        except Exception:
+            value = default
+        if self.is_watt_mode and value <= 0.0:
+            value = self.rated_watt
+        elif not self.is_watt_mode and value < 0.0:
+            value = 0.0
+        self.orig_max_power = value
 
 class HeaterPowerDistributor:
     def __init__(self, config):
@@ -108,7 +133,6 @@ class HeaterPowerDistributor:
     def _handle_ready(self):
         for idx, name in enumerate(self.heater_list):
             heater = self.pheaters.lookup_heater(name)
-            orig_cap = float(getattr(heater.control, 'heater_max_power', 1.0))
             rated = float(self.rated_watts_cfg[idx])
 
             # verify_heater params (best-effort)
@@ -124,7 +148,6 @@ class HeaterPowerDistributor:
             self.heaters[name] = HeaterRec(
                 heater=heater,
                 rated_watt=rated,
-                orig_max_power=orig_cap,
                 vh=vh,
                 vh_params=(hg, cgt, hyst),
             )
@@ -174,9 +197,15 @@ class HeaterPowerDistributor:
 
         for name, rec in self.heaters.items():
             heater = rec.heater
+            control = heater.control
+            if rec.control_id != id(control):
+                rec.update_control_info(control)
             temp, target = heater.get_temp(eventtime)
-            base_w = max(1e-6, rec.rated_watt * self._derate_factor(temp))
-            cap_w  = max(0.0, base_w * rec.orig_max_power)
+            base_w = max(0.0, rec.rated_watt * self._derate_factor(temp))
+            if rec.is_watt_mode:
+                cap_w = max(0.0, min(base_w, rec.orig_max_power))
+            else:
+                cap_w = max(0.0, base_w * rec.orig_max_power)
 
             # Target change tracking
             if rec.prev_target is None or rec.prev_target != target:
@@ -300,13 +329,23 @@ class HeaterPowerDistributor:
 
     def _apply_caps(self, alloc_w, group):
         for name, rec in self.heaters.items():
-            orig_cap = rec.orig_max_power
+            control = rec.heater.control
+            if rec.control_id != id(control):
+                rec.update_control_info(control)
             if name in alloc_w and name in group.states:
-                base = group.states[name].base_w
-                frac = max(0.0, min(orig_cap, alloc_w[name] / base))  # watts @ 100% PWM
-                rec.heater.control.heater_max_power = frac
+                state = group.states[name]
+                if rec.is_watt_mode:
+                    permitted = max(0.0, min(rec.orig_max_power, alloc_w[name]))
+                else:
+                    base = state.base_w
+                    if base <= 1e-9:
+                        permitted = 0.0
+                    else:
+                        fraction = alloc_w[name] / base
+                        permitted = max(0.0, min(rec.orig_max_power, fraction))
+                control.heater_max_power = permitted
             else:
-                rec.heater.control.heater_max_power = orig_cap
+                control.heater_max_power = rec.orig_max_power
 
     # ---------------------------- loop ----------------------------
     def _update_callback(self, eventtime):
@@ -321,7 +360,10 @@ class HeaterPowerDistributor:
         # If nobody needs heat or capacities collapsed, restore and bail
         if not group.names or group.total_cap_w <= 1e-9:
             for name, rec in self.heaters.items():
-                rec.heater.control.heater_max_power = rec.orig_max_power
+                control = rec.heater.control
+                if rec.control_id != id(control):
+                    rec.update_control_info(control)
+                control.heater_max_power = rec.orig_max_power
             return eventtime + self.poll_interval
 
         budget_w = max(0.0, float(self.max_total_watts))

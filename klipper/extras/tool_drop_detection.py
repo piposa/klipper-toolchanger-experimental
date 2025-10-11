@@ -99,6 +99,7 @@ def _parse_default_line(raw: str) -> Dict[str, _Number]:
 class ToolDropDetection:
     def __init__(self, cfg):
         self.printer = cfg.get_printer()
+        self.config = cfg
         # ── event handlers ───────────────────────────────────────────────────────────
         self.printer.register_event_handler("klippy:connect",           self._klippy_connect)
         self.printer.register_event_handler("klippy:ready",             self._klippy_ready)
@@ -293,7 +294,7 @@ class ToolDropDetection:
         for full in set(self.name_to_full.values()):
             chip = self.printer.lookup_object(full, default=None)
             if chip is None:
-                raise self.printer.config.error(f"tool_drop_detection: cannot find accelerometer section '{full}'")
+                raise self.config.error(f"tool_drop_detection: cannot find accelerometer section '{full}'")
             self.chips[full] = chip
 
     def _rate(self, gcmd): #todo add accelerometer type

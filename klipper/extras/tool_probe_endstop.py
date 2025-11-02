@@ -157,7 +157,7 @@ class ToolProbeEndstop:
                 mcu_now = mcu.estimated_print_time(now)
                 triggered = mcu_probe.query_endstop(mcu_now)
                 self.last_query[tool_probe.tool] = triggered
-                if not triggered:
+                if not triggered and tool_probe.tool >= 0:
                     candidates.append(tool_probe)
             return candidates
         
@@ -237,7 +237,7 @@ class ToolProbeEndstop:
         self.cmd_DETECT_ACTIVE_TOOL_PROBE(gcmd)
         expected_tool_number = gcmd.get_int("T", self.active_tool_number)
 
-        if expected_tool_number is None:
+        if expected_tool_number is None or expected_tool_number < 0:
             raise gcmd.error("Cannot start probe crash detection - no active tool")
         if expected_tool_number != self.active_tool_number:
             raise gcmd.error("Cannot start probe crash detection - expected tool not active")

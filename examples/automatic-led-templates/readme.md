@@ -97,6 +97,13 @@ Where here:
       }
     ```
 
+- **latch**  
+some status changes may flicker or produce unsatisfactory results, for this reason you may want to set a "latch time" `'status_name':  {'enter': 0.10, 'exit': 0.10},` would mean, flipping into 'status_name' must have status_name be atleast 0.1s active, and exiting it, must also have it not present for 0.1s
+in the example provided homing uses a generous 2s for exit to prevent 3 seperate homing color cycles when homing XYZ
+
+- **logo_smooth_fadetime** a smoothing to be applied when switching status colors. sorta "smears" transitions over time.
+- **led_refresh_rate**  only touch this setting if you like living dangerous. 
+
 -   **Global settings:**
     -   `global_brightness: 1.00`: A master brightness multiplier for all LEDs.
     -   `invert: False`: Invert colors during probing moves.
@@ -137,26 +144,6 @@ text:
      - or add the `STATUS_<STATUS>` macro to the config to call that instead.
 -    **Additional Locations:** *(nozzle/logo)* you may add extra locations, define them the same way as the rest, and load your own templates onto them `LOAD_TOOL_LED_TEMPLATE NAME='<location>' TEMPLATE='<your_template>' T=<your tn>`
 
----
-
-## led_effect
-
-> A small note on custom templates. this is merely a system to switch to preconfigured "templates" and or static colors.  
-> nothing is should prevent you from making a template which calls the common `led_effects` extra.
-
-So for example:
-(this kinda sucks because of how led_effect works but...)
-
-```
-[display_template rainbow]
-param_tn: -1
-text:
-  {% if param_tn == 0 %}
-     SET_LED_EFFECT EFFECT=rainbow_T0 REPLACE=1
-  ....
-```
-
-This however is untested. if you do test it, let me know.
 
 ---
 

@@ -288,6 +288,12 @@ class AxisStallGuard:
         kin = printer.lookup_object('toolhead').get_kinematics()
         self._stepper = stepper_name or self._resolve_stepper_for_axis(self.axis, kin, gcmd)
         self.name, self.tmc = self._get_tmc_for_stepper(self._stepper, gcmd)
+        # Kalico SET_TMC_FIELD only accepts the full stepper
+        self._stepper = (
+            getattr(self.tmc, "name", None)
+            or getattr(self.tmc, "stepper_name", None)
+            or self._normalize_stepper_name(self._stepper)
+        )
         self.info    = self._compute_field_info(self.tmc, gcmd)
 
     # --- public API ---
@@ -311,6 +317,9 @@ class AxisStallGuard:
         if gcmd is not None:
             raise gcmd.error(msg)
         raise self.gcode.command_error(msg)
+
+    def _normalize_stepper_name(self, stepper_suffix: str) -> str:
+        return stepper_suffix if stepper_suffix.startswith('stepper_') else 'stepper_' + stepper_suffix
 
     def _resolve_stepper_for_axis(self, axis: str, kin, gcmd=None) -> str:
         """Try rails' endstops first (tmc5160 stepper_y, etc.), else fall back to stepper_<axis>."""

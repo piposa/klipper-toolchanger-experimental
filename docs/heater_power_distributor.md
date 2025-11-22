@@ -25,9 +25,7 @@ It respects each heater’s own `heater_max_power`.
 - 'detatches' 2°C below setpoint to not mess with PID
 
 > [!WARNING]
-> Make sure youre still using a sane power rated PSU, if 5 tools turn on at the same time,
-> it will take between `0` and `poll_interval` seconds before the power gets reduced.
-> most PSUs dont trip this fast and are rated for ~2x current for atleast 10 seconds. a very fast electronic fuse however may still trigger.
+> safe_distribution set to False may cause a power spike if multiple heaters turn on at once before the distributor can react.
 
 ---
 
@@ -44,6 +42,8 @@ powers: 60, 60, 60            # rated W per heater, defaults to 60
 model: rapido_v2              # none|bambulab|v1|rapido_v2|v3|triangle70|custom, defaults to none
 active_extruder_boost: 1.8    # multiply weight of active tool (1.0 = equal-share), defaults to 1
 poll_interval: 1.0            # seconds between updates, defaults to 1
+safe_distribution: true       # set false to start heaters from 100 and ramp down by the distributor
+sync_mpc_power: false         # <i>(kalico mpc_control only)</i> set true to tell MPC its temp-derated available watts each tick to get better control across a wide temp band (may require recalibration of MPC)
 ```
 
 If you prefer your **own derating curve**, set `model: custom` and provide `temperature, factor pairs` (`factor` is a 0–1 multiplier on rated watts):
@@ -79,18 +79,14 @@ Change the group’s power budget at runtime:
 SET_HEATER_DISTRIBUTOR GROUP=hotends POWER=200
 ```
 
-
-
-
 ---
 
 ## How it works (nutshell)
 
 - Each tick the module samples all group heaters (temperature, target), computes a **temperature‑derated watt cap** from each heater’s rated watts, then distributes the **global budget** via a weighted 'water‑fill'.
+- Derating curves affect **budget accounting**; watt-mode heaters (MPC) can still drive up to their configured wattage while the budget debits the derated watts. Set `sync_mpc_power: true` to also update MPC’s own power to the temp-derated watts each tick (best-effort clamp to avoid >100%).
 - When the budget is tight, a **rescue step** detects heaters at risk of failing `verify_heater` (based on the hotend’s expected heat‑up slope from its `verify_heater` gains, plus the observed temperature slope) and **prioritises** them until they catch up.
 - If power isn’t limited (your budget ≥ sum of instantaneous caps), everyone just gets their own cap and the module leaves them alone.
 - When nobody needs heat, all heaters’ `heater_max_power` are restored to their original values.
 
 ---
-
-

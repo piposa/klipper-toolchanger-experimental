@@ -1,4 +1,6 @@
 import logging
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 # ---- constants ----
 POLLING_INTERVAL_DEFAULT = 1.0
@@ -21,47 +23,61 @@ BUILTIN_MODELS = {
     'triangle70':  [(25,1.00),(100,0.80),(200,0.62),(260,0.54),(320,0.45)],
 }
 
-class HeaterState:
-    def __init__(self, temp, target, slope, base_w, cap_w, need_heat, last_target_change):
-        self.temp = temp
-        self.target = target
-        self.slope = slope
-        self.base_w = base_w
-        self.cap_w = cap_w
-        self.need_heat = need_heat
-        self.last_target_change = last_target_change
 
-class GroupState:
-    def __init__(self, names, states, total_cap_w):    
-        self.names = names # list of heater names that currently need heat
-        self.states = states # dict name-> HeaterState
-        self.total_cap_w = total_cap_w
+def _clamp(val, lo, hi):
+    if val < lo:
+        return lo
+    if val > hi:
+        return hi
+    return val
 
+
+@dataclass
+class HeaterSnapshot:
+    temp: float
+    target: float
+    slope: Optional[float]
+    base_w: float
+    budget_cap_w: float
+    ctrl_cap: float
+    need_heat: bool
+    last_target_change: float
+    is_watt_mode: bool
+    orig_max_power: float
+
+
+@dataclass
+class GroupSnapshot:
+    active_names: List[str]
+    snapshots: Dict[str, HeaterSnapshot]
+    total_budget_cap_w: float
+
+
+@dataclass
 class WeightPlan:
-    def __init__(self, weights, urgent, triggered, details):
-        self.weights = weights # dict name-> weight; urgent: list of names
-        self.urgent = urgent
-        self.triggered = triggered
-        self.details = details # list of (name, urgency, scale_hint)
+    weights: Dict[str, float]
+    urgent: List[str]
+    triggered: bool
+    details: List[tuple]
 
+
+@dataclass
 class HeaterRec:
     """Per-heater runtime record"""
-    def __init__(self, heater, rated_watt, vh, vh_params):
-        self.heater = heater
-        self.rated_watt = rated_watt
-        self.vh = vh
-        self.vh_params = vh_params  # (hg, cgt, hyst)
-        self.control_id = None
-        self.control_type = None
-        self.is_watt_mode = False
-        self.orig_max_power = 1.0
-        # evolving samples
-        self.prev_temp = None
-        self.prev_time = None
-        self.prev_target = None
-        self.last_target_change = 0.0
-        self.slope_ema = None
-        self.update_control_info(heater.control)
+    heater: object
+    rated_watt: float
+    vh: object
+    vh_params: tuple
+    sync_mpc_power: bool = False
+    control_id: Optional[int] = None
+    control_type: Optional[str] = None
+    is_watt_mode: bool = False
+    orig_max_power: float = 1.0
+    prev_temp: Optional[float] = None
+    prev_time: Optional[float] = None
+    prev_target: Optional[float] = None
+    last_target_change: float = 0.0
+    slope_ema: Optional[float] = None
 
     def update_control_info(self, control):
         self.control_id = id(control)
@@ -78,9 +94,17 @@ class HeaterRec:
             value = float(value)
         except Exception:
             value = default
-        if self.is_watt_mode and value <= 0.0:
-            value = self.rated_watt
-        elif not self.is_watt_mode and value < 0.0:
+        if self.is_watt_mode:
+            if value <= 0.0:
+                value = self.rated_watt
+            if self.sync_mpc_power:
+                try:
+                    if hasattr(control, 'const_heater_power'):
+                        control.const_heater_power = value
+                    control.heater_max_power = value
+                except Exception:
+                    pass
+        elif value < 0.0:
             value = 0.0
         self.orig_max_power = value
 
@@ -93,6 +117,8 @@ class HeaterPowerDistributor:
         self.max_total_watts       = config.getfloat('max_power',                                above=0.0)
         self.poll_interval         = config.getfloat('poll_interval',  POLLING_INTERVAL_DEFAULT, above=0.0)
         self.active_extruder_boost = config.getfloat('active_extruder_boost', 1.0,               above=0.0)
+        self.safe_distribution     = config.getboolean('safe_distribution', True)
+        self.sync_mpc_power        = config.getboolean('sync_mpc_power', False)
 
         model_name = config.getchoice('model', list(BUILTIN_MODELS) + ['custom'], default='none')
         powers     = config.getfloatlist('powers', (DEFAULT_WATT,))
@@ -150,7 +176,13 @@ class HeaterPowerDistributor:
                 rated_watt=rated,
                 vh=vh,
                 vh_params=(hg, cgt, hyst),
+                sync_mpc_power=self.sync_mpc_power,
             )
+            if self.safe_distribution:
+                try:
+                    heater.control.heater_max_power = 0.0
+                except Exception:
+                    pass
 
         reactor = self.printer.get_reactor()
         reactor.register_timer(self._update_callback, reactor.monotonic() + self.poll_interval)
@@ -179,6 +211,138 @@ class HeaterPowerDistributor:
             f = 1.0
         return max(0.0, min(1.0, f))
 
+    def _caps_for(self, rec, base_w):
+        """Return (budget_cap_w, ctrl_cap) for this heater at current temp."""
+        if rec.is_watt_mode:
+            budget_cap = max(0.0, min(base_w, rec.orig_max_power))
+            ctrl_cap = budget_cap
+            if self.sync_mpc_power:
+                # Drive MPC with the derated available watts so its duty math tracks reality.
+                try:
+                    ctrl = rec.heater.control
+                    if hasattr(ctrl, 'const_heater_power'):
+                        ctrl.const_heater_power = budget_cap
+                    ctrl.heater_max_power = budget_cap
+                    # If control tracks last_power, clamp it to avoid brief >100% readings.
+                    if hasattr(ctrl, 'last_power') and getattr(ctrl, 'last_power') > budget_cap:
+                        ctrl.last_power = budget_cap
+                except Exception:
+                    pass
+            return budget_cap, ctrl_cap
+        budget_cap = max(0.0, base_w * rec.orig_max_power)
+        ctrl_cap = max(0.0, rec.orig_max_power)
+        return budget_cap, ctrl_cap
+
+    def _calc_slope(self, rec, temp, eventtime, tau=1.5):
+        """EMA slope calculator in °C/s; returns (slope or None)."""
+        if rec.prev_time is None or rec.prev_temp is None:
+            rec.prev_temp = temp
+            rec.prev_time = eventtime
+            return None
+        dt = max(1e-6, eventtime - rec.prev_time)
+        inst = (temp - rec.prev_temp) / dt
+        alpha = dt / (tau + dt)
+        prev_ema = rec.slope_ema
+        ema = inst if prev_ema is None else (alpha * inst + (1.0 - alpha) * prev_ema)
+        rec.slope_ema = ema
+        rec.prev_temp = temp
+        rec.prev_time = eventtime
+        return ema
+
+    def _snapshot(self, eventtime):
+        """Sample all heaters, build a GroupSnapshot."""
+        snapshots = {}
+        active = []
+        for name, rec in self.heaters.items():
+            heater = rec.heater
+            control = heater.control
+            if rec.control_id != id(control):
+                rec.update_control_info(control)
+            temp, target = heater.get_temp(eventtime)
+            derate = self._derate_factor(temp)
+            base_w = max(0.0, rec.rated_watt * derate)
+            budget_cap_w, ctrl_cap = self._caps_for(rec, base_w)
+
+            if rec.prev_target is None or rec.prev_target != target:
+                rec.last_target_change = eventtime
+                rec.prev_target = target
+
+            slope = self._calc_slope(rec, temp, eventtime)
+
+            need_heat = (target > 0.0) and (temp <= (target - AT_HEAT_TOLERANCE)) and budget_cap_w > 0.0
+
+            snapshots[name] = HeaterSnapshot(
+                temp=temp,
+                target=target,
+                slope=slope,
+                base_w=base_w,
+                budget_cap_w=budget_cap_w,
+                ctrl_cap=ctrl_cap,
+                need_heat=need_heat,
+                last_target_change=rec.last_target_change,
+                is_watt_mode=rec.is_watt_mode,
+                orig_max_power=rec.orig_max_power,
+            )
+            if need_heat:
+                active.append(name)
+
+        total_cap_w = sum(snapshots[n].budget_cap_w for n in active)
+        return GroupSnapshot(active_names=active, snapshots=snapshots, total_budget_cap_w=total_cap_w)
+
+    def _detect_urgent(self, snapshot, budget_w, eventtime):
+        """Return (urgent_list, details, triggered_flag)."""
+        urgent = []
+        details = []
+        power_limited = budget_w < snapshot.total_budget_cap_w - 1e-9
+        if not power_limited:
+            return urgent, details, False
+
+        seen = set()
+        for name in snapshot.active_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            snap = snapshot.snapshots[name]
+            rec = self.heaters[name]
+            vh = rec.vh
+            hg, cgt, vh_hyst = rec.vh_params
+            base_slope = hg / cgt
+
+            # warmup guard / near target guard
+            if (eventtime - snap.last_target_change) < WARMUP_GUARD:
+                continue
+            if snap.temp >= snap.target - vh_hyst:
+                continue
+
+            urgency = 0.0
+            if vh is not None and getattr(vh, 'approaching_target', False):
+                goal_temp = getattr(vh, 'goal_temp', snap.temp)
+                goal_time = getattr(vh, 'goal_systime', eventtime)
+                delta = max(0.0, goal_temp - snap.temp)
+                t_rem = max(0.5, goal_time - eventtime)
+                req_slope = delta / t_rem
+                if base_slope > 1e-9:
+                    urgency = max(urgency, req_slope / base_slope - 1.0)
+
+            if snap.slope is not None and base_slope > 1e-9:
+                urgency = max(urgency, (base_slope - snap.slope) / base_slope)
+
+            if urgency > RESCUE_URGENCY_FLOOR:
+                urgent.append(name)
+                scale_hint = 1.0 + urgency * max(1, len(snapshot.active_names))
+                details.append((name, round(urgency, 3), round(scale_hint, 2)))
+        triggered = bool(urgent)
+        return urgent, details, triggered
+
+    def _plan_weights(self, snapshot, active_extruder_name, budget_w, eventtime):
+        weights = {n: 1.0 for n in snapshot.active_names}
+        boost = float(self.active_extruder_boost)
+        if boost != 1.0 and active_extruder_name in weights:
+            weights[active_extruder_name] = boost
+
+        urgent, details, triggered = self._detect_urgent(snapshot, budget_w, eventtime)
+        return WeightPlan(weights=weights, urgent=urgent, triggered=triggered, details=details)
+
     def _get_active_extruder_name(self, eventtime):
         th = self.printer.lookup_object('toolhead', None)
         if th is None:
@@ -189,119 +353,7 @@ class HeaterPowerDistributor:
         except Exception:
             return None
 
-    def _collect_state(self, eventtime):
-        """Return GroupState snapshot for this tick."""
-        TAU = 1.5  # EMA time-constant for slope (s)
-        states = {}
-        active = []
-
-        for name, rec in self.heaters.items():
-            heater = rec.heater
-            control = heater.control
-            if rec.control_id != id(control):
-                rec.update_control_info(control)
-            temp, target = heater.get_temp(eventtime)
-            base_w = max(0.0, rec.rated_watt * self._derate_factor(temp))
-            if rec.is_watt_mode:
-                cap_w = max(0.0, min(base_w, rec.orig_max_power))
-            else:
-                cap_w = max(0.0, base_w * rec.orig_max_power)
-
-            # Target change tracking
-            if rec.prev_target is None or rec.prev_target != target:
-                rec.last_target_change = eventtime
-                rec.prev_target = target
-
-            # EMA slope calc
-            if rec.prev_time is not None and rec.prev_temp is not None:
-                dt = max(1e-6, eventtime - rec.prev_time)
-                inst = (temp - rec.prev_temp) / dt
-                alpha = dt / (TAU + dt)
-                prev_ema = rec.slope_ema
-                ema = inst if prev_ema is None else (alpha * inst + (1.0 - alpha) * prev_ema)
-                rec.slope_ema = ema
-                slope = ema
-            else:
-                slope = None
-
-            rec.prev_temp = temp
-            rec.prev_time = eventtime
-
-            need_heat = (target > 0.0) and (temp <= (target - AT_HEAT_TOLERANCE))
-            hs = HeaterState(
-                temp=temp,
-                target=target,
-                slope=slope,
-                base_w=base_w,
-                cap_w=cap_w,
-                need_heat=bool(need_heat and cap_w > 0.0),
-                last_target_change=rec.last_target_change,
-            )
-            states[name] = hs
-            if hs.need_heat:
-                active.append(name)
-
-        total_cap_w = sum(states[n].cap_w for n in active)
-        return GroupState(active, states, total_cap_w)
-
-    def _compute_weights(self, group, active_extruder_name, budget_w, eventtime):
-        """Compute base weights and detect urgent heaters. Returns a WeightPlan."""
-        active_names = group.names
-        weights = {n: 1.0 for n in active_names}
-        triggered = False
-        details = []
-        urgent = []
-
-        boost = float(self.active_extruder_boost)
-        power_limited = budget_w < group.total_cap_w - 1e-9
-
-        # Active extruder bass boost
-        if boost != 1.0 and active_extruder_name in weights:
-            weights[active_extruder_name] = boost
-
-        if not power_limited:
-            return WeightPlan(weights, [], False, [])
-
-        # Build rescue candidates
-        seen = set()
-        for n in active_names:
-            if n in seen:
-                continue
-            seen.add(n)
-
-            s = group.states[n]
-            vh = self.heaters[n].vh
-            hg, cgt, vh_hyst = self.heaters[n].vh_params
-            base_slope = hg / cgt
-
-            # warmup guard
-            if (eventtime - s.last_target_change) < WARMUP_GUARD:
-                continue
-            if s.temp >= s.target - vh_hyst:
-                continue
-
-            urgency = 0.0
-            if vh is not None and getattr(vh, 'approaching_target', False):
-                # Values are numeric already in Klipper; same reactor time base.
-                goal_temp = getattr(vh, 'goal_temp', s.temp)
-                goal_time = getattr(vh, 'goal_systime', eventtime)
-                D = max(0.0, goal_temp - s.temp)
-                T_rem = max(0.5, goal_time - eventtime)
-                req_slope = D / T_rem
-                if base_slope > 1e-9:
-                    urgency = max(urgency, req_slope / base_slope - 1.0)
-
-            if s.slope is not None and base_slope > 1e-9:
-                urgency = max(urgency, (base_slope - s.slope) / base_slope)
-
-            if urgency > RESCUE_URGENCY_FLOOR:
-                urgent.append(n)
-                # keep a small record for notify only
-                scale_hint = 1.0 + urgency * max(1, len(active_names))
-                triggered = True
-                details.append((n, round(urgency, 3), round(scale_hint, 2)))
-
-        return WeightPlan(weights, urgent, triggered, details)
+    # ---------------------------- planning ----------------------------
 
     def _water_fill(self, active_names, weights, eff_cap_w, target_budget):
         alloc_w   = {n: 0.0 for n in active_names}
@@ -327,25 +379,41 @@ class HeaterPowerDistributor:
             unsat -= newly_sat
         return alloc_w
 
-    def _apply_caps(self, alloc_w, group):
+    def _apply_caps(self, alloc_w, snapshot):
         for name, rec in self.heaters.items():
             control = rec.heater.control
             if rec.control_id != id(control):
                 rec.update_control_info(control)
-            if name in alloc_w and name in group.states:
-                state = group.states[name]
-                if rec.is_watt_mode:
-                    permitted = max(0.0, min(rec.orig_max_power, alloc_w[name]))
+            snap = snapshot.snapshots.get(name)
+            if name in alloc_w and snap is not None:
+                budget_cap = snap.budget_cap_w
+                if budget_cap <= 1e-9:
+                    permitted = 0.0
+                    if rec.is_watt_mode and self.sync_mpc_power:
+                        try:
+                            if hasattr(control, 'const_heater_power'):
+                                control.const_heater_power = rec.orig_max_power
+                            control.heater_max_power = rec.orig_max_power
+                            if hasattr(control, 'last_power') and getattr(control, 'last_power') > rec.orig_max_power:
+                                control.last_power = rec.orig_max_power
+                        except Exception:
+                            pass
                 else:
-                    base = state.base_w
-                    if base <= 1e-9:
-                        permitted = 0.0
-                    else:
-                        fraction = alloc_w[name] / base
-                        permitted = max(0.0, min(rec.orig_max_power, fraction))
+                    share = _clamp(alloc_w[name] / budget_cap, 0.0, 1.0)
+                    permitted = share * snap.ctrl_cap
+                    if not rec.is_watt_mode:
+                        permitted = max(0.0, min(rec.orig_max_power, permitted))
                 control.heater_max_power = permitted
             else:
                 control.heater_max_power = rec.orig_max_power
+                if rec.is_watt_mode and self.sync_mpc_power:
+                    try:
+                        if hasattr(control, 'const_heater_power'):
+                            control.const_heater_power = rec.orig_max_power
+                        if hasattr(control, 'last_power') and getattr(control, 'last_power') > rec.orig_max_power:
+                            control.last_power = rec.orig_max_power
+                    except Exception:
+                        pass
 
     # ---------------------------- loop ----------------------------
     def _update_callback(self, eventtime):
@@ -355,21 +423,35 @@ class HeaterPowerDistributor:
         self.last_time = eventtime
 
         active_extruder = self._get_active_extruder_name(eventtime)
-        group = self._collect_state(eventtime)
+        snapshot = self._snapshot(eventtime)
 
         # If nobody needs heat or capacities collapsed, restore and bail
-        if not group.names or group.total_cap_w <= 1e-9:
+        if not snapshot.active_names or snapshot.total_budget_cap_w <= 1e-9:
             for name, rec in self.heaters.items():
                 control = rec.heater.control
                 if rec.control_id != id(control):
                     rec.update_control_info(control)
-                control.heater_max_power = rec.orig_max_power
+                snap = snapshot.snapshots.get(name)
+                if snap is not None and snap.target > 0.0:
+                    control.heater_max_power = snap.budget_cap_w
+                    if rec.is_watt_mode and self.sync_mpc_power:
+                        try:
+                            if hasattr(control, 'const_heater_power'):
+                                control.const_heater_power = snap.budget_cap_w
+                            if hasattr(control, 'last_power') and getattr(control, 'last_power') > snap.budget_cap_w:
+                                control.last_power = snap.budget_cap_w
+                        except Exception:
+                            pass
+                elif self.safe_distribution:
+                    control.heater_max_power = 0.0
+                else:
+                    control.heater_max_power = rec.orig_max_power
             return eventtime + self.poll_interval
 
         budget_w = max(0.0, float(self.max_total_watts))
-        target_budget = min(budget_w, group.total_cap_w)
+        target_budget = min(budget_w, snapshot.total_budget_cap_w)
 
-        plan = self._compute_weights(group, active_extruder, budget_w, eventtime)
+        plan = self._plan_weights(snapshot, active_extruder, budget_w, eventtime)
 
         if plan.triggered and (not self.rescue_on or (eventtime - self.last_notify_time) > 5.0):
             self.rescue_on = True
@@ -379,14 +461,17 @@ class HeaterPowerDistributor:
                 list(plan.urgent)[:4],
                 ", ".join(["%s(urg=%s,x%s)" % (n,u,sc) for (n,u,sc) in plan.details[:4]])
             ))
-            self.gcode.respond_info if VERBOSE else logging.info(msg)
+            if VERBOSE:
+                self.gcode.respond_info(msg)
+            else:
+                logging.info(msg)
 
         elif not plan.triggered:
             self.rescue_on = False
 
-        caps = {n: group.states[n].cap_w for n in group.names}
-        alloc_w = self._alloc_priority(list(plan.urgent), list(group.names), plan.weights, caps, target_budget)
-        self._apply_caps(alloc_w, group)
+        caps = {n: snapshot.snapshots[n].budget_cap_w for n in snapshot.active_names}
+        alloc_w = self._alloc_priority(list(plan.urgent), list(snapshot.active_names), plan.weights, caps, target_budget)
+        self._apply_caps(alloc_w, snapshot)
         return eventtime + self.poll_interval
 
     # ---------------------------- priority allocator ----------------------------

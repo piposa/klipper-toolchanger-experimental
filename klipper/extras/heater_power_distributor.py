@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 # ---- constants ----
 POLLING_INTERVAL_DEFAULT = 1.0
 DEFAULT_WATT             = 60.0
+IDLE_MIN_POWER           = 1e-6
 
 AT_HEAT_TOLERANCE       = 2     # °C below target still considered heating
 WARMUP_GUARD            = 5     # s after a target change before considering rescue
@@ -107,7 +108,6 @@ class HeaterRec:
         elif value < 0.0:
             value = 0.0
         self.orig_max_power = value
-
 class HeaterPowerDistributor:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -181,7 +181,7 @@ class HeaterPowerDistributor:
             self.heaters[name].update_control_info(heater.control)
             if self.safe_distribution:
                 try:
-                    heater.control.heater_max_power = 0.0
+                    heater.control.heater_max_power = IDLE_MIN_POWER
                 except Exception:
                     pass
 
@@ -389,7 +389,7 @@ class HeaterPowerDistributor:
             if name in alloc_w and snap is not None:
                 budget_cap = snap.budget_cap_w
                 if budget_cap <= 1e-9:
-                    permitted = 0.0
+                    permitted = IDLE_MIN_POWER
                     if rec.is_watt_mode and self.sync_mpc_power:
                         try:
                             if hasattr(control, 'const_heater_power'):
@@ -444,7 +444,7 @@ class HeaterPowerDistributor:
                         except Exception:
                             pass
                 elif self.safe_distribution:
-                    control.heater_max_power = 0.0
+                    control.heater_max_power = IDLE_MIN_POWER
                 else:
                     control.heater_max_power = rec.orig_max_power
             return eventtime + self.poll_interval

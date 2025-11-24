@@ -178,6 +178,7 @@ class HeaterPowerDistributor:
                 vh_params=(hg, cgt, hyst),
                 sync_mpc_power=self.sync_mpc_power,
             )
+            self.heaters[name].update_control_info(heater.control)
             if self.safe_distribution:
                 try:
                     heater.control.heater_max_power = 0.0

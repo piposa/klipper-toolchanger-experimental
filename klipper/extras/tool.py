@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+import logging
+
 from . import toolchanger
 
 class Tool:
@@ -87,15 +89,20 @@ class Tool:
     def _register_button(self, config, detect_pin_name):
         ppins = self.printer.lookup_object('pins')
         p = ppins.parse_pin(detect_pin_name, can_invert=True, can_pullup=True)
+        requested_pull = p.get('pullup', 0)
         base = f"{p['chip_name']}:{p['pin']}"
         ppins.allow_multi_use_pin(base)
         prev = ppins.active_pins.get(base)
-        if prev is None: # If were first, register non inverted.
+        # If first, stay "neutral" (noninverted). Otherwise reuse existing polarity.
+        if prev is None:
             actual_inv  = 0
-            actual_pull = p.get('pullup', 0)
-        else: # if were not. respect the previous one.
+            actual_pull = requested_pull
+        else:
             actual_inv  = prev.get('invert', 0)
             actual_pull = prev.get('pullup', 0)
+            if bool(p.get('invert', 0)) != actual_inv or requested_pull != actual_pull:
+                logging.info("Reusing detection pin %s for %s with invert=%s pullup=%s (requested invert=%s pullup=%s)",
+                    base, self.name, actual_inv, actual_pull, bool(p.get('invert', 0)), requested_pull)
         dec = ''
         if   actual_pull == 1:  dec += '^'
         elif actual_pull == -1: dec += '~'

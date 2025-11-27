@@ -5,8 +5,8 @@ Just offering more features, extras, and options to expand upon.
 Basically, the "assortment of Klipper extensions" from viesturz, with the "assortment of Klipper extensions" from me.
 
 ## Kalico status
-* toolchanger, tool probes, calibration rounded path and the extras are all crosscompatible between kalico and klipper
-* manual rail is untested and will likely break on kalico
+* toolchanger, tool probes, calibration, rounded path, heater power distributor are all crosscompatible between kalico and klipper
+* manual rail is untested and will likely break on kalico, neither did i test the other extras on kalico yet.
 
 ## Installation
 

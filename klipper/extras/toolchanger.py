@@ -4,8 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-import ast, bisect
-import ast, bisect, traceback
+import ast, bisect, traceback, logging, types
 from unittest.mock import sentinel
 from .probe_blind_button import ProbeBlindButton
 
@@ -26,6 +25,107 @@ DETECT_ABSENT = 0
 DETECT_PRESENT = 1
 
 
+class GCodeSuspendHelper:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object('gcode')
+        self.stashed_commands = []
+        self._drop_current_buffer = False # just allows us to decide to discard while True
+        self._is_patched = False
+        self._pause_triggered = False
+
+        self.respond_to_console = (config.get('gcode_suspend_respond', 'log') == 'console')
+        
+        # Define the exception class dynamically to inherit from the specific gcode instance's error class
+        self.ToolchangePause = type('ToolchangePause', (self.gcode.error,), {})
+
+    def _log(self, msg):
+        if self.respond_to_console:
+            self.gcode.respond_info(msg)
+        else:
+            logging.info(msg)
+
+    def install_patch(self):
+        if self._is_patched:
+            return
+        
+        orig_process_commands = self.gcode._process_commands
+
+        def patched_process_commands(gcode_self, commands, need_ack=True):
+            # We iterate manually to allow splitting the buffer upon error
+            for i, line in enumerate(commands):
+                try:
+                    # Pass single line. Pass need_ack EXACTLY as received.
+                    orig_process_commands([line], need_ack=need_ack)
+                
+                except self.gcode.error as e:
+                    # Catch exceptions that were NOT swallowed by Klipper (need_ack=False)
+                    if isinstance(e, self.ToolchangePause): # this prob very destructive →  or self._pause_triggered:
+                         self._handle_pause(commands, i, e)
+                         return
+                    raise e
+                
+                except Exception:
+                    raise
+
+                # Check if pause was triggered but swallowed by Klipper (need_ack=True)
+                if self._pause_triggered:
+                    self._handle_pause(commands, i, self.ToolchangePause("Toolchange Pause Triggered"))
+                    return
+
+        self.gcode._process_commands = types.MethodType(patched_process_commands, self.gcode)
+        self._is_patched = True
+
+    def _handle_pause(self, commands, current_index, exception_obj):
+        if self._drop_current_buffer:
+            # We are inside the failed template. We must abort this loop.
+            # We raise the exception so it bubbles up to select_tool.
+            raise exception_obj
+        else:
+            # We have bubbled up to the outer context. Stash remainder.
+            remaining = commands[current_index+1:]
+            if remaining:
+                self.stashed_commands.extend(remaining)
+                self._log("Toolchanger: Stashed %d commands." % len(remaining))
+            
+            # Reset triggers since we handled it
+            self._pause_triggered = False
+            self._log("Toolchanger: Execution suspended cleanly.")
+            
+            # Suppress the error to stop the loop but keep printer alive
+            return
+
+    def initiate_pause(self, reason):
+        self._log("Toolchanger: Initiating pause due to: %s" % reason)
+        
+        # Only pause the SD card if it is actually doing something.
+        # This prevents 'Print Paused' state when just running macros from console.
+        sd = self.printer.lookup_object('virtual_sdcard', None)
+        if sd and sd.is_active():
+            self._log("Toolchanger: Pausing active SD card.")
+            sd.do_pause()
+
+        self._drop_current_buffer = True
+        self._pause_triggered = True
+        
+        raise self.ToolchangePause(reason)
+
+    def prepare_for_recovery(self):
+        self._drop_current_buffer = False
+
+    def replay_stash(self):
+        if self.stashed_commands:
+            self._log("Toolchanger: Replaying %d stashed commands." % len(self.stashed_commands))
+            script = "\n".join(self.stashed_commands)
+            self.stashed_commands = [] 
+            self.gcode.run_script_from_command(script)
+
+    def clear_stash(self):
+        if self.stashed_commands:
+            self._log("Toolchanger: Clearing stashed commands on reset.")
+            self.stashed_commands = []
+
+
 class Toolchanger:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -34,6 +134,8 @@ class Toolchanger:
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
 
+        self.experimental_pause = config.getboolean('experimental_pause', False)
+        
         self.name = config.get_name()
         self.params = get_params_dict(config)
         init_options = {'home': INIT_ON_HOME,
@@ -91,6 +193,12 @@ class Toolchanger:
         self.next_change_id = 1
         self.current_change_id = -1
 
+        # Pause Support
+        self.suspend_helper = None
+        if self.experimental_pause:
+            self.suspend_helper = GCodeSuspendHelper(config)
+            self.suspend_helper.install_patch()
+
         self.printer.register_event_handler("homing:home_rails_begin",
                                             self._handle_home_rails_begin)
         self.printer.register_event_handler('klippy:connect',
@@ -144,6 +252,8 @@ class Toolchanger:
     def _handle_connect(self):
         self.status = STATUS_UNINITALIZED
         self.active_tool = None
+        if self.suspend_helper:
+            self.suspend_helper.clear_stash()
 
     def _handle_shutdown(self):
         self.status = STATUS_UNINITALIZED
@@ -153,6 +263,8 @@ class Toolchanger:
         if self._ready_timer is not None:
             r.update_timer(self._ready_timer, r.NEVER)
             self._ready_timer = None
+        if self.suspend_helper:
+            self.suspend_helper.clear_stash()
 
     def _handle_ready(self):
         def _ready_after_delay(eventtime):
@@ -165,7 +277,7 @@ class Toolchanger:
             self._ready_timer = None
             return self.printer.get_reactor().NEVER
         r = self.printer.get_reactor()
-        if self._ready_timer is None:
+        if self._ready_timer is None: # this doesnt work at all
             self._ready_timer = r.register_timer(_ready_after_delay, r.monotonic() + 0.1)
 
     def get_status(self, eventtime):
@@ -430,12 +542,28 @@ class Toolchanger:
                 gcmd.respond_info('Tool unselected')
             self.current_change_id = -1
 
-        except gcmd.error as e:
+        except self.gcode.error as e:
+            # Experimental Pause Handling:
+            # Check if this error was actually a pause initiated by us.
+            is_suspend = False
+            if self.suspend_helper:
+                if isinstance(e, self.suspend_helper.ToolchangePause):
+                    is_suspend = True
+
+            if is_suspend:
+                if self.suspend_helper.respond_to_console:
+                    self.gcode.respond_info("Toolchanger: Suspend caught in select_tool. Preparing recovery.")
+                self.suspend_helper.prepare_for_recovery()
+                self.current_change_id = -1
+                raise # Re-raise so the patch can catch it in outer loop and Stash.
+            
+            # Standard error handling
             if self.status == STATUS_ERROR:
-                raise  # already handled upstream
+                raise # used to be pass, imo very bad... since actual exceptions get gobbled up
+                      # imo its better to "just not raise" from within macro
             else:
                 self.current_change_id = -1
-                raise # This was not handled, abort.
+                raise 
 
     def _process_error(self, raise_error, message):
         self.status = STATUS_ERROR
@@ -454,6 +582,7 @@ class Toolchanger:
                 # Restore gcode state, but do not move. Prepare for error_gcode to run pause and capture the state for resume.
                 self.gcode.run_script_from_command(
                     "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
+            
             self.run_gcode('error_gcode', self.error_gcode, extra_context)
             if is_inside_toolchange:
                 # HACKY HACKY HACKY
@@ -466,6 +595,9 @@ class Toolchanger:
                                                     self.last_change_gcode_position[3]]
 
         # Bail out rest of the gcmd execution.
+        if self.experimental_pause and is_inside_toolchange and self.suspend_helper:
+            self.suspend_helper.initiate_pause(message)
+        
         if raise_error:
             raise raise_error(message)
 
@@ -485,6 +617,9 @@ class Toolchanger:
             "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
         # Restore state sets old gcode offsets, fix that.
         self._set_tool_gcode_offset(tool, self.last_change_extra_z_offset)
+
+        if self.suspend_helper:
+            self.suspend_helper.replay_stash()
 
     def test_tool_selection(self, gcmd, restore_axis):
         if self.status != STATUS_READY:
@@ -612,7 +747,7 @@ class Toolchanger:
                 self.validate_detected_tool(expected, respond_info=gcmd.respond_info, raise_error=None)
                 if self.detected_tool != expected: 
                     toolhead.lookahead.reset() # we fucked up
-                    self.gcode.run_script_from_command("{action_raise_error('VERIFY_TOOL_DETECTED ASYNC error')}")
+                    self.gcode.run_script_from_command("M112")
                 return reactor.NEVER
 
             def _lookahead_cb(print_time):
@@ -718,11 +853,7 @@ class Toolchanger:
             'toolchanger': self.get_status(curtime),
             **extra_context,
         }
-        #try:
         template.run_gcode_from_command(context)
-        #except Exception as e:
-        #    self.gcode.respond_raw(f'!! exception during \'run_gcode\': {e}')
-        #    raise e
         
     def cmd_SET_TOOL_OFFSET(self, gcmd):
         tool = self._get_tool_from_gcmd(gcmd)

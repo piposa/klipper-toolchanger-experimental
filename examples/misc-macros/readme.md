@@ -1,0 +1,60 @@
+# misc macros
+
+In here theres just macros which may or may not be related to the toolchanger, and are mostly just "nice to have"
+
+
+- [Heatsoak](#interruptable_heatsoak)
+- [Auto Purge](#AUTO_PURGE)
+
+## interruptable_heatsoak
+
+### Setup required
+- rename your old `[gcode_macro PRINT_START]` -> `[gcode_macro _PRINT_START]`
+- edit your heatsoak macro/copy your old one in
+- make sure you have the duration in the filename, (ie: `{print_time}` in orcas filename format.)
+
+### what it does(nt) do
+- does scale based on print duration
+- allows you to edit the wait time
+- runs your macro at startup, allows you to do other things while the timer is running down
+  (so for example, why not calibrate while we wait?)
+- popup reopens a minute before it runs out, in case you wanna extend it.
+
+### example heatsoak macro to call
+```gcode
+[gcode_macro HEATSOAK]
+description: "my heatsoak macro"
+gcode: ; Will recieve all the same parameters handed into print start to use.
+    M140 S{params.BED_TEMP}
+    ; move to center
+    MOVE_TO_CENTER Z=5
+    ; blow hot air
+    M106 S255
+
+    ; preheat all the tools
+    {% for tn in printer.toolchanger.tool_numbers if 'T' ~ tn ~ '_TEMP' in params %}
+        M109 T{tn} S130
+    {% endfor %}
+```
+---
+
+## AUTO_PURGE
+more a sort of toy, but also a purge macro, analyzes your first layer, lays down lines next to the starting position, and purges tools
+
+### setup
+- add the folder to your config
+- indclude auto_purge/include.cfg
+- make sure you got scipy and numpy installed (you do if you have shaketune) (#TODO install dependencies)
+- edit the path to point to the folder you added (`'lib_path':'~/printer_data/config/toolchanger/auto_purge'`)
+- add AUTO_PURGE {rawparams} to your print start where you want to purge
+
+### what it does
+
+Spawns a preview SVG to console, purges your tools
+
+![image](../../media/auto_purge.png)
+
+### settings
+theres various settings in auto_purge.cfg right at the top to adjust, such as prime line width etc, tool nozzle size yada yada is inferred from the respective extruder configs.
+
+---

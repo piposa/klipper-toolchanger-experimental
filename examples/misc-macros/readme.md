@@ -5,6 +5,8 @@ In here theres just macros which may or may not be related to the toolchanger, a
 
 - [Heatsoak](#interruptable_heatsoak)
 - [Auto Purge](#AUTO_PURGE)
+- [toolchanger shaper management](#TC_SHAPERS)
+
 
 ## interruptable_heatsoak
 
@@ -36,6 +38,7 @@ gcode: ; Will recieve all the same parameters handed into print start to use.
         M109 T{tn} S130
     {% endfor %}
 ```
+
 ---
 
 ## AUTO_PURGE
@@ -56,5 +59,21 @@ Spawns a preview SVG to console, purges your tools
 
 ### settings
 theres various settings in auto_purge.cfg right at the top to adjust, such as prime line width etc, tool nozzle size yada yada is inferred from the respective extruder configs.
+
+---
+
+## TC_SHAPERS
+
+![image](../../media/shaper_calibration_example.png)
+
+All the needed knobs are right at the top of the file, nothing is however preventing you from changing anything else in here.
+Macro descriptions should be pretty self explanatory.
+- change show_images to False if you experience any issues
+- change async to 0 to wait for the command to finish (~2 minutes)
+- leave async 1 and the images will be rendered in the background and will become avalible in console/wherever they are saved once done.
+
+before you run this you should probably edit your `save_path` of `SHOW_LATEST_SHAPER_PLOT` and perhaps configure `save_variables` if not already setup.
+
+To load the shapers automatically youd add `TC_LOAD_SHAPERS` into the after change of your toolchanger. 
 
 ---

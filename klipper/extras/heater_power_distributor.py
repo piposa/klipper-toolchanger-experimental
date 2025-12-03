@@ -7,6 +7,8 @@ POLLING_INTERVAL = 1.0
 DEFAULT_WATT = 60.0
 IDLE_MIN_POWER = 1e-6
 TUNING_RESERVATION_BUFFER = 1.05
+BACKOFF_BASE_SECONDS = 1.0
+MAX_BACKOFF_ATTEMPTS = 5
 
 # Thresholds
 AT_HEAT_TOLERANCE = 2.0      # °C below target considered "heating"
@@ -67,6 +69,9 @@ class HeaterContext:
     # Capabilities at current snapshot
     derating_factor: float = 1.0
     available_watts: float = 0.0
+    error_count: int = 0
+    backoff_until: float = 0.0
+    disabled: bool = False
     
     def update_control_type(self):
         """
@@ -124,6 +129,10 @@ class HeaterContext:
             
             if val <= 0.0: val = default_pwr
             self.config_max_power = val
+
+    def clear_error_backoff(self):
+        self.error_count = 0
+        self.backoff_until = 0.0
 
     def update_state(self, eventtime: float, curve: LinearCurve):
         if self.is_tuning: return
@@ -189,8 +198,8 @@ class HeaterPowerDistributor:
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
 
     def _handle_ready(self):
-        # Startup Safety: Clamp EVERYTHING to idle immediately.
-        # This prevents the "6 heaters on at once" crash.
+        reactor = self.printer.get_reactor()
+        now = reactor.monotonic()
         for name in self.heater_names:
             h_obj = self.pheaters.lookup_heater(name)
             self.heaters[name] = HeaterContext(
@@ -206,10 +215,10 @@ class HeaterPowerDistributor:
                     # Fix for MPC internal tracking if needed
                     if hasattr(h_obj.control, 'last_power'):
                         h_obj.control.last_power = IDLE_MIN_POWER
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._handle_heater_exception(self.heaters[name], now, exc, "startup_clamp")
 
-        self.printer.get_reactor().register_timer(self._update_loop, self.printer.get_reactor().monotonic() + self.poll_interval)
+        reactor.register_timer(self._update_loop, reactor.monotonic() + self.poll_interval)
         logging.info(f"HeaterDistributor '{self.name}': Budget={self.total_budget_watts}W, Heaters={list(self.heaters.keys())}")
 
     def cmd_SET_HEATER_DISTRIBUTOR(self, gcmd):
@@ -251,9 +260,46 @@ class HeaterPowerDistributor:
             if not satisfied: break 
         return allocations
 
-    def _apply_power_limits(self, allocations: Dict[str, float]):
+    def _restore_default_limits(self, ctx: HeaterContext):
+        control = ctx.control_obj or getattr(ctx.heater, 'control', None)
+        if control is None:
+            return
+        try:
+            control.heater_max_power = ctx.config_max_power
+            if ctx.is_mpc and hasattr(control, 'last_power'):
+                control.last_power = ctx.config_max_power
+        except Exception:
+            logging.exception(f"HeaterDistributor '{self.name}': Failed to restore defaults for '{ctx.name}'")
+
+    def _handle_heater_exception(self, ctx: HeaterContext, eventtime: float, exc: Exception, phase: str):
+        if ctx.disabled:
+            return
+
+        ctx.error_count += 1
+        attempt = ctx.error_count
+        backoff_delay = BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+        disable_now = attempt >= MAX_BACKOFF_ATTEMPTS
+
+        self._restore_default_limits(ctx)
+
+        if disable_now:
+            ctx.disabled = True
+            ctx.backoff_until = float('inf')
+            logging.exception(
+                f"HeaterDistributor '{self.name}': Disabling control for '{ctx.name}' after {attempt}/{MAX_BACKOFF_ATTEMPTS} failures during {phase}. "
+                f"Reverting to configured max power {ctx.config_max_power}"
+            )
+        else:
+            ctx.backoff_until = eventtime + backoff_delay
+            logging.exception(
+                f"HeaterDistributor '{self.name}': Exception in '{ctx.name}' during {phase}. "
+                f"Backing off {backoff_delay:.1f}s (attempt {attempt}/{MAX_BACKOFF_ATTEMPTS}) and restoring defaults."
+            )
+
+    def _apply_power_limits(self, allocations: Dict[str, float], eventtime: float):
         for name, ctx in self.heaters.items():
-            if ctx.is_tuning: continue
+            if ctx.is_tuning or ctx.disabled or eventtime < ctx.backoff_until:
+                continue
 
             allocated_w = allocations.get(name, 0.0)
             control = ctx.control_obj
@@ -282,8 +328,9 @@ class HeaterPowerDistributor:
                 if ctx.is_mpc and hasattr(control, 'last_power'):
                     if getattr(control, 'last_power') > limit_val:
                         control.last_power = limit_val
-            except Exception:
-                pass
+                ctx.clear_error_backoff()
+            except Exception as exc:
+                self._handle_heater_exception(ctx, eventtime, exc, "apply_power_limits")
 
     def _update_loop(self, eventtime):
         active_extruder = self._get_active_extruder(eventtime)
@@ -295,15 +342,23 @@ class HeaterPowerDistributor:
         needing_heat = []
 
         for name, ctx in self.heaters.items():
-            # Check for tuning switch and restore MPC objects if needed
-            ctx.update_control_type()
+            if ctx.disabled or eventtime < ctx.backoff_until:
+                continue
+
+            try:
+                ctx.update_control_type()
+            except Exception as exc:
+                self._handle_heater_exception(ctx, eventtime, exc, "control_detection")
+                continue
             
-            # If Tuning: Reserve power (Rated * 1.05 safety) and skip logic
             if ctx.is_tuning:
                 reserved_watts += (ctx.rated_watt * TUNING_RESERVATION_BUFFER)
                 continue
-
-            ctx.update_state(eventtime, self.model_curve)
+            try:
+                ctx.update_state(eventtime, self.model_curve)
+            except Exception as exc:
+                self._handle_heater_exception(ctx, eventtime, exc, "state_update")
+                continue
             
             if ctx.target_temp > 0:
                 is_heating = ctx.current_temp < (ctx.target_temp - AT_HEAT_TOLERANCE)
@@ -324,22 +379,20 @@ class HeaterPowerDistributor:
                 capacities[name] = cap
                 needing_heat.append(name)
 
-        # Allocation
         available_budget = max(0.0, self.total_budget_watts - reserved_watts)
 
-        # If everything is idle, force idle limits immediately
         if not needing_heat:
-            self._apply_power_limits({}) 
+            self._apply_power_limits({}, eventtime) 
             return eventtime + self.poll_interval
 
         total_cap_demand = sum(capacities[n] for n in needing_heat)
         
         if total_cap_demand <= available_budget:
-             allocations = capacities
+            allocations = capacities
         else:
-             allocations = self._water_fill(demands, capacities, available_budget)
+            allocations = self._water_fill(demands, capacities, available_budget)
 
-        self._apply_power_limits(allocations)
+        self._apply_power_limits(allocations, eventtime)
         return eventtime + self.poll_interval
 
 def load_config_prefix(config):

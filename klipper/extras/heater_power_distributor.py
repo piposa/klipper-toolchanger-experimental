@@ -271,6 +271,21 @@ class HeaterPowerDistributor:
         except Exception:
             logging.exception(f"HeaterDistributor '{self.name}': Failed to restore defaults for '{ctx.name}'")
 
+    def _clamp_pid_integral(self, ctx: HeaterContext, control: Any, limit_val: float):
+        try:
+            ki = getattr(control, 'Ki', None)
+            integ = getattr(control, 'prev_temp_integ', None)
+            if ki is None or integ is None or ki <= 0.0:
+                return
+            integ_max = max(0.0, limit_val) / ki
+            if integ < 0.0 or integ > integ_max:
+                control.prev_temp_integ = clamp(integ, 0.0, integ_max)
+        except Exception:
+            logging.debug(
+                "HeaterDistributor '%s': Skipping PID integral clamp for '%s': %s",
+                self.name, ctx.name, repr(exc)
+            )
+
     def _handle_heater_exception(self, ctx: HeaterContext, eventtime: float, exc: Exception, phase: str):
         if ctx.disabled:
             return
@@ -285,15 +300,16 @@ class HeaterPowerDistributor:
         if disable_now:
             ctx.disabled = True
             ctx.backoff_until = float('inf')
-            logging.exception(
-                f"HeaterDistributor '{self.name}': Disabling control for '{ctx.name}' after {attempt}/{MAX_BACKOFF_ATTEMPTS} failures during {phase}. "
-                f"Reverting to configured max power {ctx.config_max_power}"
+            logging.warning(
+                "HeaterDistributor '%s': Disabling control for '%s' after %d/%d failures during %s. "
+                "Reverting to configured max power %.4f. Error=%r",
+                self.name, ctx.name, attempt, MAX_BACKOFF_ATTEMPTS, phase, ctx.config_max_power, exc
             )
         else:
             ctx.backoff_until = eventtime + backoff_delay
-            logging.exception(
-                f"HeaterDistributor '{self.name}': Exception in '{ctx.name}' during {phase}. "
-                f"Backing off {backoff_delay:.1f}s (attempt {attempt}/{MAX_BACKOFF_ATTEMPTS}) and restoring defaults."
+            logging.warning(
+                "HeaterDistributor '%s': Exception in '%s' during %s. Backing off %.1fs (attempt %d/%d) and restoring defaults. Error=%r",
+                self.name, ctx.name, phase, backoff_delay, attempt, MAX_BACKOFF_ATTEMPTS, exc
             )
 
     def _apply_power_limits(self, allocations: Dict[str, float], eventtime: float):
@@ -328,6 +344,7 @@ class HeaterPowerDistributor:
                 if ctx.is_mpc and hasattr(control, 'last_power'):
                     if getattr(control, 'last_power') > limit_val:
                         control.last_power = limit_val
+                self._clamp_pid_integral(ctx, control, limit_val)
                 ctx.clear_error_backoff()
             except Exception as exc:
                 self._handle_heater_exception(ctx, eventtime, exc, "apply_power_limits")

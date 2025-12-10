@@ -542,7 +542,7 @@ class Toolchanger:
                 gcmd.respond_info('Tool unselected')
             self.current_change_id = -1
 
-        except self.gcode.error as e:
+        except self.gcode.error or gcmd.error as e: # idk theyre technically the same but im paranoid 
             # Experimental Pause Handling:
             # Check if this error was actually a pause initiated by us.
             is_suspend = False
@@ -552,7 +552,7 @@ class Toolchanger:
 
             if is_suspend:
                 if self.suspend_helper.respond_to_console:
-                    self.gcode.respond_info("Toolchanger: Suspend caught in select_tool. Preparing recovery.")
+                    gcmd.respond_info("Toolchanger: Suspend caught in select_tool. Preparing recovery.")
                 self.suspend_helper.prepare_for_recovery()
                 self.current_change_id = -1
                 raise # Re-raise so the patch can catch it in outer loop and Stash.
@@ -563,7 +563,11 @@ class Toolchanger:
                       # imo its better to "just not raise" from within macro
             else:
                 self.current_change_id = -1
-                raise 
+                raise
+        except: # somehow exceptions during template evaluation are slipping through?
+            if self.status == STATUS_CHANGING:
+                self.status = STATUS_ERROR
+            raise
 
     def _process_error(self, raise_error, message):
         self.status = STATUS_ERROR

@@ -200,9 +200,13 @@ class ToolProbeEndstop:
         if len(active_tools) == 1 :
             self.set_active_probe(active_tools[0])
 
-    cmd_SET_ACTIVE_TOOL_PROBE_help = "Set the tool probe that will act as the Z endstop."
+    cmd_SET_ACTIVE_TOOL_PROBE_help = (
+        "Set the tool probe that will act as the Z endstop (T=-1 clears selection).")
     def cmd_SET_ACTIVE_TOOL_PROBE(self, gcmd):
         probe_nr = gcmd.get_int("T")
+        if probe_nr == -1:
+            self.set_active_probe(None)
+            return
         if (probe_nr not in self.tool_probes):
             raise gcmd.error("SET_ACTIVE_TOOL_PROBE no tool probe for tool %d" % (probe_nr))
         self.set_active_probe(self.tool_probes[probe_nr])

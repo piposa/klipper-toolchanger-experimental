@@ -44,6 +44,7 @@ class Tool:
         self.extruder_name = self._config_get(config, 'extruder', None)
         self.detect_state       = toolchanger.DETECT_UNAVAILABLE
         self.flip_detect_state  = True
+        self.detect_mcu         = None
         _detect_pin_name = config.get('detection_pin', None)
         if _detect_pin_name:
             self._register_button(config, _detect_pin_name)
@@ -89,6 +90,8 @@ class Tool:
     def _register_button(self, config, detect_pin_name):
         ppins = self.printer.lookup_object('pins')
         p = ppins.parse_pin(detect_pin_name, can_invert=True, can_pullup=True)
+        detect_mcu = p.get('chip', None)
+        self.detect_mcu = detect_mcu
         requested_pull = p.get('pullup', 0)
         base = f"{p['chip_name']}:{p['pin']}"
         ppins.allow_multi_use_pin(base)
@@ -109,9 +112,34 @@ class Tool:
         if actual_inv:          dec += '!'
         reg = f"{dec}{base}"
         buttons = self.printer.load_object(config, 'buttons')
-        buttons.register_buttons([reg], self._handle_detect)
+        def _btn_handler(eventtime, is_triggered, mcu=detect_mcu):
+            if getattr(mcu, "non_critical_disconnected", False):
+                # Ignore events while the MCU is offline; state handled via events below
+                return
+            self._handle_detect(eventtime, is_triggered)
+
+        buttons.register_buttons([reg], _btn_handler)
         self.flip_detect_state = config.getboolean('flip_detect', False) ^ bool(actual_inv) ^ bool(p.get('invert', 0))
         self.detect_state = (toolchanger.DETECT_PRESENT if self.flip_detect_state else toolchanger.DETECT_ABSENT)
+
+        # Track non-critical disconnect/reconnect explicitly
+        if detect_mcu and hasattr(detect_mcu, "get_non_critical_disconnect_event_name"):
+            def _on_disc():
+                self.detect_state = toolchanger.DETECT_UNAVAILABLE
+                self.toolchanger.note_detect_change(self)
+            def _on_recon():
+                # Restore baseline state; actual detection follows on next edge
+                self.detect_state = (toolchanger.DETECT_PRESENT
+                                     if self.flip_detect_state
+                                     else toolchanger.DETECT_ABSENT)
+                self.toolchanger.note_detect_change(self)
+            printer = self.printer
+            printer.register_event_handler(
+                detect_mcu.get_non_critical_disconnect_event_name(), _on_disc
+            )
+            printer.register_event_handler(
+                detect_mcu.get_non_critical_reconnect_event_name(), _on_recon
+            )
 
 
     def get_status(self, eventtime):

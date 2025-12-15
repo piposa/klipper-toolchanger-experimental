@@ -667,6 +667,11 @@ class Toolchanger:
         detected = None
         detected_names = []
         for t in self.tools.values():
+            mcu = getattr(t, "detect_mcu", None)
+            if getattr(mcu, "non_critical_disconnected", False):
+                if t.detect_state != DETECT_UNAVAILABLE:
+                    t.detect_state = DETECT_UNAVAILABLE # defensive idk
+                continue
             if t.detect_state == DETECT_PRESENT:
                 detected = t
                 detected_names.append(t.name)

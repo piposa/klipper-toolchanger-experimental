@@ -1,10 +1,9 @@
 """Backport probe helpers missing from Kalico."""
-
 from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Optional
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -150,6 +149,13 @@ def _probe_offsets_helper_factory():
 def _probe_session_helper_factory(probe_mod):
     calc_probe_z_average = probe_mod.calc_probe_z_average
     HINT_TIMEOUT = getattr(probe_mod, "HINT_TIMEOUT", "")
+    RetrySession = getattr(probe_mod, "RetrySession", None)
+    PrinterProbe = getattr(probe_mod, "PrinterProbe", None)
+    _retry_method = None
+    _discard_method = None
+    if PrinterProbe is not None:
+        _retry_method = getattr(PrinterProbe, "_run_probe_with_retries", None)
+        _discard_method = getattr(PrinterProbe, "_discard_first_result", None)
 
     class ProbeSessionHelper:
         def __init__(self, config, param_helper, start_session_cb):
@@ -158,9 +164,25 @@ def _probe_session_helper_factory(probe_mod):
             self.start_session_cb = start_session_cb
             self.hw_probe_session = None
             self.results = []
+            self.toolhead = None
+            self.gcode = self.printer.lookup_object("gcode")
+            self.drop_first_result = config.getboolean("drop_first_result", False)
+            self.retry_speed = config.getfloat(
+                "retry_speed", self.param_helper.speed, above=0.0
+            )
+            self.retry_session: Optional[Any] = (
+                RetrySession(config) if RetrySession is not None else None
+            )
+            self.retry_session_active = False
             self.printer.register_event_handler(
                 "gcode:command_error", self._handle_command_error
             )
+            self.printer.register_event_handler(
+                "klippy:connect", self._handle_connect
+            )
+
+        def _handle_connect(self):
+            self.toolhead = self.printer.lookup_object("toolhead")
 
         def _handle_command_error(self):
             if self.hw_probe_session is not None:
@@ -179,6 +201,7 @@ def _probe_session_helper_factory(probe_mod):
                 self._probe_state_error()
             self.hw_probe_session = self.start_session_cb(gcmd)
             self.results = []
+            self.retry_session_active = False
             return self
 
         def end_probe_session(self):
@@ -187,39 +210,105 @@ def _probe_session_helper_factory(probe_mod):
                 self._probe_state_error()
             self.results = []
             self.hw_probe_session = None
+            self._end_retry_session()
             hw_probe_session.end_probe_session()
 
-        def _probe(self, gcmd):
-            toolhead = self.printer.lookup_object("toolhead")
+        def _start_retry_session(self, gcmd):
+            if not self.retry_session or self.retry_session_active:
+                return
+            if self.toolhead is None:
+                self.toolhead = self.printer.lookup_object("toolhead")
+            self.retry_session.start(gcmd)
+            self.retry_session.set_position(self.toolhead.get_position())
+            self.retry_session_active = True
+
+        def _end_retry_session(self):
+            if self.retry_session and self.retry_session_active:
+                self.retry_session.end()
+                self.retry_session_active = False
+
+        def _move(self, coord, speed):
+            self.toolhead.manual_move(coord, speed)
+
+        def _retract(self, params, base_xy=None):
+            lift_speed = params["lift_speed"]
+            sample_retract = params["sample_retract_dist"]
+            pos = self.toolhead.get_position()
+            target = [None, None, pos[2] + sample_retract]
+            if base_xy is not None:
+                target[0] = base_xy[0]
+                target[1] = base_xy[1]
+            self._move(target, lift_speed)
+
+        def _run_hw_probe(self, gcmd):
+            if self.toolhead is None:
+                self.toolhead = self.printer.lookup_object("toolhead")
             curtime = self.printer.get_reactor().monotonic()
-            if "z" not in toolhead.get_status(curtime)["homed_axes"]:
+            if "z" not in self.toolhead.get_status(curtime)["homed_axes"]:
                 raise self.printer.command_error("Must home before probe")
             try:
                 self.hw_probe_session.run_probe(gcmd)
-                epos = self.hw_probe_session.pull_probed_results()[0]
+                all_results = self.hw_probe_session.pull_probed_results()
+                if not all_results:
+                    raise self.printer.command_error("Probe did not report a result")
+                epos = all_results[0]
             except self.printer.command_error as err:
                 reason = str(err)
                 if "Timeout during endstop homing" in reason:
                     reason += HINT_TIMEOUT
                 raise self.printer.command_error(reason)
-            self.printer.send_event("probe:update_results", epos)
-            gcode = self.printer.lookup_object("gcode")
-            gcode.respond_info(
-                "probe at %.3f,%.3f is z=%.6f" % (epos[0], epos[1], epos[2])
+            if isinstance(epos, tuple) and len(epos) == 2:
+                pos, is_good = epos
+            else:
+                pos, is_good = epos, True
+            self.printer.send_event("probe:update_results", pos)
+            self.gcode.respond_info(
+                "probe at %.3f,%.3f is z=%.6f" % (pos[0], pos[1], pos[2])
             )
-            return epos[:3]
+            return pos[:3], is_good
 
-        def run_probe(self, gcmd):
-            if self.hw_probe_session is None:
-                self._probe_state_error()
-            params = self.param_helper.get_probe_params(gcmd)
-            toolhead = self.printer.lookup_object("toolhead")
-            probexy = toolhead.get_position()[:2]
+        def _discard_first_result_retry(self, params, gcmd):
+            if not (self.drop_first_result and self.retry_session):
+                return
+            pos, is_good = self._run_hw_probe(gcmd)
+            self.retry_session.evaluate_probe(is_good)
+            self._retract(params)
+
+        def _make_retry_adapter(self, params):
+            helper = self
+
+            class _Adapter:
+                def __init__(self):
+                    self._helper = helper
+                    self.retry_speed = helper.retry_speed
+                    self.retry_session = helper.retry_session
+                    self.printer = helper.printer
+                    self.gcode = helper.gcode
+                    self._params = params
+                    self._drop_first_result = helper.drop_first_result
+
+                def _move(self, coord, speed):
+                    self._helper._move(coord, speed)
+
+                def _probe(self, speed, gcmd):
+                    return self._helper._run_hw_probe(gcmd)
+
+                def _retract(self, gcmd):
+                    self._helper._retract(self._params)
+
+            return _Adapter()
+
+        def _run_without_retry(self, params, gcmd, base_xy):
             retries = 0
             positions = []
             sample_count = params["samples"]
+            drop_pending = self.drop_first_result
             while len(positions) < sample_count:
-                pos = self._probe(gcmd)
+                pos, _ = self._run_hw_probe(gcmd)
+                if drop_pending:
+                    drop_pending = False
+                    self._retract(params, base_xy)
+                    continue
                 positions.append(pos)
                 z_positions = [p[2] for p in positions]
                 if max(z_positions) - min(z_positions) > params["samples_tolerance"]:
@@ -232,12 +321,61 @@ def _probe_session_helper_factory(probe_mod):
                     )
                     retries += 1
                     positions = []
+                    continue
                 if len(positions) < sample_count:
-                    toolhead.manual_move(
-                        probexy
-                        + [pos[2] + params["sample_retract_dist"]],
-                        params["lift_speed"],
+                    self._retract(params, base_xy)
+            return positions
+
+        def run_probe(self, gcmd):
+            if self.hw_probe_session is None:
+                self._probe_state_error()
+            if self.toolhead is None:
+                self.toolhead = self.printer.lookup_object("toolhead")
+            params = self.param_helper.get_probe_params(gcmd)
+            base_xy = self.toolhead.get_position()[:2]
+            sample_count = params["samples"]
+            positions = []
+            retries = 0
+            use_retry = (
+                self.retry_session is not None and _retry_method is not None
+            )
+            if use_retry:
+                self._start_retry_session(gcmd)
+                adapter = self._make_retry_adapter(params)
+                if _discard_method is not None:
+                    _discard_method(
+                        adapter, params["probe_speed"], self.retry_session, gcmd
                     )
+                else:
+                    self._discard_first_result_retry(params, gcmd)
+            else:
+                adapter = None
+            if use_retry:
+                while len(positions) < sample_count:
+                    pos = _retry_method(
+                        adapter, params["probe_speed"], self.retry_session, gcmd
+                    )
+                    positions.append(pos)
+                    z_positions = [p[2] for p in positions]
+                    if (
+                        max(z_positions) - min(z_positions)
+                        > params["samples_tolerance"]
+                    ):
+                        if retries >= params["samples_tolerance_retries"]:
+                            raise gcmd.error(
+                                "Probe samples exceed samples_tolerance"
+                            )
+                        gcmd.respond_info(
+                            "Probe samples exceed tolerance. Retrying..."
+                        )
+                        retries += 1
+                        positions = []
+                        continue
+                    if len(positions) < sample_count:
+                        self._retract(params)
+                self._end_retry_session()
+            else:
+                positions = self._run_without_retry(params, gcmd, base_xy)
             epos = calc_probe_z_average(positions, params["samples_result"])
             self.results.append(epos)
 
@@ -406,6 +544,13 @@ def _probe_command_helper_factory(probe_mod, manual_probe_mod):
             pos = run_single_probe(self.probe, gcmd)
             gcmd.respond_info("Result is z=%.6f" % (pos[2],))
             self.last_z_result = pos[2]
+            home = gcmd.get("HOME", default="").lower()
+            if home == "z":
+                toolhead = self.printer.lookup_object("toolhead")
+                toolhead.get_last_move_time()
+                toolhead_pos = toolhead.get_position()
+                toolhead_pos[2] = toolhead_pos[2] - self.last_z_result
+                toolhead.set_position(toolhead_pos, homing_axes=[2])
 
         def probe_calibrate_finalize(self, kin_pos):
             if kin_pos is None:

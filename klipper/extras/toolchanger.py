@@ -327,23 +327,9 @@ class Toolchanger:
 
     cmd_SELECT_TOOL_help = 'Select active tool'
     def cmd_SELECT_TOOL(self, gcmd):
-        tool_name = gcmd.get('TOOL', None)
-        if tool_name:
-            tool = self.printer.lookup_object(tool_name)
-            if not tool:
-                raise gcmd.error("Select tool: TOOL=%s not found" % (tool_name))
-            restore_axis = gcmd.get('RESTORE_AXIS', tool.t_command_restore_axis)
-            self.select_tool(gcmd, tool, restore_axis)
-            return
-        tool_nr = gcmd.get_int('T', None)
-        if tool_nr is not None:
-            tool = self.lookup_tool(tool_nr)
-            if not tool:
-                raise gcmd.error("Select tool: T%d not found" % (tool_nr))
-            restore_axis = gcmd.get('RESTORE_AXIS', tool.t_command_restore_axis)
-            self.select_tool(gcmd, tool, restore_axis)
-            return
-        raise gcmd.error("Select tool: Either TOOL or T needs to be specified")
+        tool = self.gcmd_tool(gcmd)
+        restore_axis = gcmd.get('RESTORE_AXIS', tool.t_command_restore_axis)
+        self.select_tool(gcmd, tool, restore_axis)
 
     cmd_SET_TOOL_TEMPERATURE_help = 'Set temperature for tool'
 
@@ -454,6 +440,9 @@ class Toolchanger:
         if self.active_tool == tool:
             gcmd.respond_info('%s already selected' % tool.name if tool else None)
             return
+        # should we allow disconnected tools to be unselected if they're disconnected? probably, right? not guarding it.
+        if getattr(tool, 'is_disconnected', False):
+            raise gcmd.error('cannot select tool, %s is disconnected' % (tool.name,))
         this_change_id = self.next_change_id
         self.next_change_id += 1
         self.current_change_id = this_change_id
@@ -462,7 +451,7 @@ class Toolchanger:
             self.ensure_homed(gcmd)
             self.status = STATUS_CHANGING
 
-            # What is going on here:
+            # The toolhead knows where it is because it knows where it isn't and by substracting where it isnt from where it isn't...
             #  - toolhead position - the position of the toolhead mount relative to homing sensors.
             #  - gcode position - the position of the nozzle, relative to the bed;
             #      since each tool has a slightly different geometry, each tool has a set of gcode offsets that determine the delta.
@@ -667,10 +656,7 @@ class Toolchanger:
         detected = None
         detected_names = []
         for t in self.tools.values():
-            mcu = getattr(t, "detect_mcu", None)
-            if getattr(mcu, "non_critical_disconnected", False):
-                if t.detect_state != DETECT_UNAVAILABLE:
-                    t.detect_state = DETECT_UNAVAILABLE # defensive idk
+            if getattr(t, 'is_disconnected', False):
                 continue
             if t.detect_state == DETECT_PRESENT:
                 detected = t

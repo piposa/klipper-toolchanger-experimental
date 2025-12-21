@@ -317,7 +317,7 @@ class Toolchanger:
     cmd_INITIALIZE_TOOLCHANGER_help = "Initialize the toolchanger"
 
     def cmd_INITIALIZE_TOOLCHANGER(self, gcmd):
-        tool = self.gcmd_tool(gcmd, self.detected_tool)
+        tool = self.gcmd_tool(gcmd, self.detected_tool)  # type: ignore
         was_error  = self.status == STATUS_ERROR
         self.initialize(tool)
         if was_error and gcmd.get_int("RECOVER", default=0) == 1:
@@ -328,7 +328,7 @@ class Toolchanger:
     cmd_SELECT_TOOL_help = 'Select active tool'
     def cmd_SELECT_TOOL(self, gcmd):
         tool = self.gcmd_tool(gcmd)
-        restore_axis = gcmd.get('RESTORE_AXIS', tool.t_command_restore_axis)
+        restore_axis = gcmd.get('RESTORE_AXIS', tool.t_command_restore_axis)  # type: ignore
         self.select_tool(gcmd, tool, restore_axis)
 
     cmd_SET_TOOL_TEMPERATURE_help = 'Set temperature for tool'
@@ -513,8 +513,7 @@ class Toolchanger:
                 self.run_gcode('after_change_gcode',
                                tool.after_change_gcode, extra_context)
 
-            force_restore = tool.perform_restore_move if tool is not None else self.perform_restore_move
-            if force_restore:
+            if tool.perform_restore_move if tool is not None else self.perform_restore_move:
                 self._restore_axis(restore_gcode_position, restore_axis, tool, extra_z_offset)
 
             self.gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
@@ -534,35 +533,31 @@ class Toolchanger:
         except self.gcode.error or gcmd.error as e: # idk theyre technically the same but im paranoid 
             # Experimental Pause Handling:
             # Check if this error was actually a pause initiated by us.
-            is_suspend = False
-            if self.suspend_helper:
-                if isinstance(e, self.suspend_helper.ToolchangePause):
-                    is_suspend = True
-
-            if is_suspend:
-                if self.suspend_helper.respond_to_console:
+            # this can **only** come from validate/select_tool_error
+            if self.suspend_helper and isinstance(e, self.suspend_helper.ToolchangePause): 
+                if self.suspend_helper.respond_to_console:  # type: ignore
                     gcmd.respond_info("Toolchanger: Suspend caught in select_tool. Preparing recovery.")
-                self.suspend_helper.prepare_for_recovery()
+                self.suspend_helper.prepare_for_recovery() # type: ignore
                 self.current_change_id = -1
                 raise # Re-raise so the patch can catch it in outer loop and Stash.
-            
-            # Standard error handling
-            if self.status == STATUS_ERROR:
-                raise # used to be pass, imo very bad... since actual exceptions get gobbled up
-                      # imo its better to "just not raise" from within macro
+                      # "raise" ie tell virtual sd card were okay but need a pause
+
+            # --------------------------------------------------------------------
+            # Standard error handling, only from validate or SELECT_TOOL_ERROR
+            if self.status == STATUS_ERROR: # gets set by validate detected, or select tool error
+                pass # handled as a default error
             else:
+                # regular gcmd errors end up in here, for example action_raise_error.
                 self.current_change_id = -1
+                self.status = STATUS_UNINITALIZED # test, imo this would be "correct"? 
+                # because we raise the error up but mark us as "something wrong" 
                 raise
-        except: # somehow exceptions during template evaluation are slipping through?
-            if self.status == STATUS_CHANGING:
-                self.status = STATUS_ERROR
-            raise
 
     def _process_error(self, raise_error, message):
         self.status = STATUS_ERROR
         self.error_message = message
         is_inside_toolchange = self.current_change_id != -1
-
+        captured_exc = None
         self.current_change_id = -1
         if self.error_gcode:
             extra_context = {}
@@ -574,23 +569,33 @@ class Toolchanger:
                 }
                 # Restore gcode state, but do not move. Prepare for error_gcode to run pause and capture the state for resume.
                 self.gcode.run_script_from_command(
-                    "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
-            
-            self.run_gcode('error_gcode', self.error_gcode, extra_context)
+                    "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0"
+                )
+                
+                try: # may itself raise an error? how to handle that?
+                    self.run_gcode('error_gcode', self.error_gcode, extra_context)
+                except Exception as e:
+                    captured_exc  = e
+
             if is_inside_toolchange:
                 # HACKY HACKY HACKY
                 # Manually transfer over before toolchange position to paused gcode state, Restore/Save looses that.
                 pause_state = self.gcode_move.saved_states.get('PAUSE_STATE', None)
                 if pause_state and self.last_change_pickup_tool:
-                    pause_state['last_position'] = [self.last_change_gcode_position[0] + self.last_change_pickup_tool.gcode_x_offset,
-                                                    self.last_change_gcode_position[1] + self.last_change_pickup_tool.gcode_y_offset,
-                                                    self.last_change_gcode_position[2] + self.last_change_pickup_tool.gcode_z_offset + self.last_change_extra_z_offset,
-                                                    self.last_change_gcode_position[3]]
+                    x0, y0, z0, e0 = self.last_change_gcode_position[:4]
+                    t = self.last_change_pickup_tool
+                    pause_state["last_position"] = [
+                        x0 + t.gcode_x_offset,
+                        y0 + t.gcode_y_offset,
+                        z0 + t.gcode_z_offset + self.last_change_extra_z_offset,
+                        e0,
+                    ]
 
         # Bail out rest of the gcmd execution.
         if self.experimental_pause and is_inside_toolchange and self.suspend_helper:
-            self.suspend_helper.initiate_pause(message)
-        
+            self.suspend_helper.initiate_pause(message) # raises our special error type
+        if captured_exc is not None:
+            raise captured_exc 
         if raise_error:
             raise raise_error(message)
 
@@ -636,7 +641,7 @@ class Toolchanger:
         self.gcode.run_script_from_command("SET_GCODE_OFFSET X=0.0 Y=0.0 Z=0.0")
 
         self.run_gcode('tool.dropoff_gcode',
-                       self.active_tool.dropoff_gcode, extra_context)
+                       self.active_tool.dropoff_gcode, extra_context)  # type: ignore
         self.run_gcode('tool.pickup_gcode',
                        tool.pickup_gcode, extra_context)
 
@@ -701,7 +706,7 @@ class Toolchanger:
 
     def cmd_VERIFY_TOOL_DETECTED(self, gcmd):
         self._ensure_toolchanger_ready(gcmd)
-        expected = self.gcmd_tool(gcmd, self.active_tool)
+        expected = self.gcmd_tool(gcmd, self.active_tool)  # type: ignore
         if not self.has_detection:
             raise gcmd.error("VERIFY_TOOL_DETECTED needs tool detection to be set up.")
 

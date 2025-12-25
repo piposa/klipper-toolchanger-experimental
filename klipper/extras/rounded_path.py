@@ -93,8 +93,8 @@ class RoundedPath:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.mm_per_arc_segment = config.getfloat('resolution', 1., above=0.0)
-        self.algorithm          = config.getchoice('algorithm', self._ALGO_MAP, 'fillet')
-        self.reset_on_mismatch  = config.getboolean('reset_on_mismatch', False)
+        self.algorithm          = config.getchoice('algorithm', self._ALGO_MAP, 'bezier')
+        self.reset_on_mismatch  = config.getboolean('reset_on_mismatch', True)
         if self.algorithm == 'bezier' and np is None:
             raise config.error("Choice 'bezier' for option 'algorithm' in section 'rounded_path' requires 'numpy' to be installed." \
                                 "(install numpy or switch to fillet)")

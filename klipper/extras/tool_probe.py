@@ -6,6 +6,16 @@
 import logging
 from . import probe
 
+if not hasattr(probe, 'ProbeOffsetsHelper'):
+    try:
+        from .kalico_compat import ensure_probe_backports
+    except ImportError:
+        logging.warning("ProbeOffsetsHelper missing but compat helpers unavailable")
+    else:
+        added = ensure_probe_backports(probe)
+        if 'ProbeOffsetsHelper' not in added and not hasattr(probe, 'ProbeOffsetsHelper'):
+            logging.warning("ProbeOffsetsHelper still missing after compat patch")
+
 class ToolProbe:
     def __init__(self, config):
         self.tool = config.getint('tool')

@@ -107,17 +107,20 @@ class SensorlessAutoTune:
             self.toolhead.set_position(post, homing_axes=pre_homed_axes)
 
         targets = list(post) # subtract the full measured delta in tool space
-        for i in range(len(targets)):
-            di = float(dvec[i] or 0.0)
+        for i, di_raw in enumerate(dvec):
+            if i >= len(targets):
+                break
+            di = float(di_raw or 0.0)
             targets[i] = float(post[i] - di)
 
-        for i in range(len(targets)): # per-axis range check only when we actually change that axis
+        for i in range(min(len(targets), len(dvec))): # per-axis range check only when we actually change that axis
             if abs(targets[i] - post[i]) > 1e-9:
                 rmin, rmax = self.kin.rails[i].get_range()
                 if not (rmin <= targets[i] <= rmax):
+                    di = float(dvec[i] or 0.0)
                     raise gcmd.error(
                         "internal error: cannot restore axis %d: %.2f <= %.2f <= %.2f (dvec: %.3f, post: %.3f)"
-                        % (i, rmin, targets[i], rmax, dvec[i], post[i])
+                        % (i, rmin, targets[i], rmax, di, post[i])
                     )
         # move back in one shot
         hi = self.kin.rails[AXES[axis]].get_homing_info()
@@ -285,6 +288,12 @@ class AxisStallGuard:
         kin = printer.lookup_object('toolhead').get_kinematics()
         self._stepper = stepper_name or self._resolve_stepper_for_axis(self.axis, kin, gcmd)
         self.name, self.tmc = self._get_tmc_for_stepper(self._stepper, gcmd)
+        # Kalico SET_TMC_FIELD only accepts the full stepper
+        self._stepper = (
+            getattr(self.tmc, "name", None)
+            or getattr(self.tmc, "stepper_name", None)
+            or self._normalize_stepper_name(self._stepper)
+        )
         self.info    = self._compute_field_info(self.tmc, gcmd)
 
     # --- public API ---
@@ -308,6 +317,9 @@ class AxisStallGuard:
         if gcmd is not None:
             raise gcmd.error(msg)
         raise self.gcode.command_error(msg)
+
+    def _normalize_stepper_name(self, stepper_suffix: str) -> str:
+        return stepper_suffix if stepper_suffix.startswith('stepper_') else 'stepper_' + stepper_suffix
 
     def _resolve_stepper_for_axis(self, axis: str, kin, gcmd=None) -> str:
         """Try rails' endstops first (tmc5160 stepper_y, etc.), else fall back to stepper_<axis>."""
@@ -372,4 +384,3 @@ class AxisStallGuard:
 
 def load_config(config):
     return SensorlessAutoTune(config)
-

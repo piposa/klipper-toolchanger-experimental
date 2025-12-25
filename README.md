@@ -1,15 +1,19 @@
-# klipper-toolchanger-experimental
+# klipper-toolchanger-hard
 
 Aimed to be **fully compatible** with the original `klipper-toolchanger`.  
 Just offering more features, extras, and options to expand upon.  
 Basically, the "assortment of Klipper extensions" from viesturz, with the "assortment of Klipper extensions" from me.
+
+## Kalico status
+* toolchanger, tool probes, calibration, rounded path, heater power distributor are all crosscompatible between kalico and klipper
+* manual rail is untested and will likely break on kalico, neither did i test the other extras on kalico yet.
 
 ## Installation
 
 To install this plugin, run the installation script using the following command over SSH. This script will download this GitHub repository to your RaspberryPi home directory, and symlink the files in the Klipper extra folder.
 
 ```commandline
-wget -O - https://raw.githubusercontent.com/Contomo/klipper-toolchanger-experimental/main/install.sh | bash
+wget -O - https://raw.githubusercontent.com/Contomo/klipper-toolchanger-hard/main/install.sh | bash
 ```
 
 ## Updates that add new files

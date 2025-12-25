@@ -22,13 +22,13 @@ function preflight_checks {
 
 function check_download {
     local installdirname installbasename
-    installdirname="$(dirname ${INSTALL_PATH})"
-    installbasename="$(basename ${INSTALL_PATH})"
+    installdirname="$(dirname "${INSTALL_PATH}")"
+    installbasename="$(basename "${INSTALL_PATH}")"
 
     if [ ! -d "${INSTALL_PATH}" ]; then
         echo "[DOWNLOAD] Downloading repository..."
-        if git -C $installdirname clone https://github.com/contomo/klipper-toolchanger-experimental.git $installbasename; then
-            chmod +x ${INSTALL_PATH}/install.sh
+        if git -C "${installdirname}" clone https://github.com/contomo/klipper-toolchanger-hard.git "${installbasename}"; then
+            chmod +x "${INSTALL_PATH}/install.sh"
             printf "[DOWNLOAD] Download complete!\n\n"
         else
             echo "[ERROR] Download of git repository failed!"
@@ -40,8 +40,41 @@ function check_download {
 }
 
 function link_extension {
-    echo "[INSTALL] Linking extension to Klipper..."
-    for file in "${INSTALL_PATH}"/klipper/extras/*.py; do ln -sfn "${file}" "${KLIPPER_PATH}/klippy/extras/"; done
+    echo "[INSTALL] Linking extension to Klipper (extras)..."
+
+    local src="${INSTALL_PATH}/klipper/extras"
+    local dst="${KLIPPER_PATH}/klippy/extras"
+
+    if [ ! -d "$src" ]; then
+        echo "[ERROR] Extras directory not found at: $src"
+        exit 1
+    fi
+
+    mkdir -p "$dst"
+    shopt -s nullglob dotglob
+    local found=0
+    
+    for path in "$src"/*.py "$src"/*/; do # Link top-level .py files and top-level package dirs
+        [ -e "$path" ] || continue
+        found=1
+
+        if [ -d "$path" ]; then
+            path="${path%/}"
+            if [ ! -f "$path/__init__.py" ]; then
+                continue
+            fi
+        fi
+        base="${path##*/}"
+        case "$base" in
+            __pycache__|*.dist-info|*.egg-info) continue ;;
+        esac
+        ln -sfn "$path" "$dst/$base"
+        echo "  → $base"
+    done
+    shopt -u nullglob dotglob
+    if [ "$found" -eq 0 ]; then
+        echo "[WARN] No .py files or package dirs found under: $src"
+    fi
 }
 
 function restart_klipper {

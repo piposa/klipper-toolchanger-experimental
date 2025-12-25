@@ -42,7 +42,8 @@ Implements the regular [Probe params](https://www.klipper3d.org/Status_Reference
 Implements the regular [Probe commands](https://www.klipper3d.org/G-Codes.html#probe) and the following.
 
 ### SET_ACTIVE_TOOL_PROBE
-`SET_ACTIVE_TOOL_PROBE T=<tool_nr>`: Manually set the active probe 
+`SET_ACTIVE_TOOL_PROBE T=<tool_nr>`: Manually set the active probe.  
+`T=-1` clears/unselects any active tool probe.
 
 ### DETECT_ACTIVE_TOOL_PROBE
 `DETECT_ACTIVE_TOOL_PROBE`: Detects the active probe based on the one that is **not** triggered.

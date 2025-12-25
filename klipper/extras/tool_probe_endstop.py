@@ -5,6 +5,18 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from . import probe
 
+if not all(hasattr(probe, attr) for attr in (
+    'ProbeParameterHelper',
+    'ProbeSessionHelper',
+    'HomingViaProbeHelper',
+    'ProbeCommandHelper')):
+    try:
+        from .kalico_compat import ensure_probe_backports
+    except ImportError:
+        pass
+    else:
+        ensure_probe_backports(probe)
+
 # Virtual endstop, using a tool attached Z probe in a toolchanger setup.
 # Tool endstop change may be done either via SET_ACTIVE_TOOL_PROBE TOOL=99
 # Or via auto-detection of single open tool probe via DETECT_ACTIVE_TOOL_PROBE
@@ -25,6 +37,7 @@ class ToolProbeEndstop:
         self.homing_helper = probe.HomingViaProbeHelper(config, self.mcu_probe, self.param_helper)
         self.probe_session = probe.ProbeSessionHelper(config, self.param_helper, self.homing_helper.start_probe_session)
         self.cmd_helper = probe.ProbeCommandHelper(config, self, self.mcu_probe.query_endstop)
+        self._active_session = None
 
         # Emulate the probe object, since others rely on this.
         if self.printer.lookup_object('probe', default=None):
@@ -60,10 +73,48 @@ class ToolProbeEndstop:
             return self.active_probe.get_probe_params(gcmd)
         raise self.printer.command_error("No active tool probe")
     
+    def get_lift_speed(self, gcmd=None):
+        if self.active_probe:
+            return self.active_probe.get_probe_params(gcmd)['lift_speed']
+        return self.param_helper.get_probe_params(gcmd)['lift_speed']
+
     def start_probe_session(self, gcmd):
         if self.active_probe:
             return self.active_probe.start_probe_session(gcmd)
         raise self.printer.command_error("No active tool probe")
+
+    def _ensure_active_probe(self, gcmd=None):
+        if self.active_probe:
+            return
+        if gcmd is None:
+            gcode = self.printer.lookup_object('gcode')
+            gcmd = gcode.create_gcode_command("", "", {})
+        self._ensure_active_tool_or_fail(gcmd)
+
+    def multi_probe_begin(self, *args, **kwargs):
+        self._ensure_active_probe()
+        self._active_session = None
+
+    def _get_session(self, gcmd):
+        self._ensure_active_probe(gcmd)
+        if self._active_session is None:
+            self._active_session = self.active_probe.start_probe_session(gcmd)
+        return self._active_session
+
+    def run_probe(self, gcmd):
+        session = self._get_session(gcmd)
+        session.run_probe(gcmd)
+        results = session.pull_probed_results()
+        if not results:
+            raise self.printer.command_error("Probe did not report a result")
+        return results[-1]
+
+    def multi_probe_end(self):
+        if self._active_session is not None:
+            try:
+                self._active_session.end_probe_session()
+            finally:
+                self._active_session = None
 
     def add_probe(self, config, tool_probe):
         if (tool_probe.tool in self.tool_probes):
@@ -83,6 +134,7 @@ class ToolProbeEndstop:
             self.mcu_probe.set_active_mcu(None)
             self.active_tool_number = -1
             self.cmd_helper.name = self.name
+        self._active_session = None
 
     def _query_open_tools(self, tool_number=None):
         if tool_number is not None and tool_number not in self.tool_probes:
@@ -95,10 +147,17 @@ class ToolProbeEndstop:
         def _query_probes(now):
             candidates = []
             for tool_probe in self.tool_probes.values():
-                mcu_now = tool_probe.mcu_probe.get_mcu().estimated_print_time(now)
-                triggered = tool_probe.mcu_probe.query_endstop(mcu_now)
+                mcu_probe = tool_probe.mcu_probe
+                mcu = mcu_probe.get_mcu()
+                endstop = getattr(mcu_probe, "mcu_endstop", None)
+                if (getattr(mcu, "non_critical_disconnected", False)
+                    or endstop is None
+                    or getattr(endstop, "_query_cmd", None) is None):
+                    continue
+                mcu_now = mcu.estimated_print_time(now)
+                triggered = mcu_probe.query_endstop(mcu_now)
                 self.last_query[tool_probe.tool] = triggered
-                if not triggered:
+                if not triggered and tool_probe.tool >= 0:
                     candidates.append(tool_probe)
             return candidates
         
@@ -141,9 +200,13 @@ class ToolProbeEndstop:
         if len(active_tools) == 1 :
             self.set_active_probe(active_tools[0])
 
-    cmd_SET_ACTIVE_TOOL_PROBE_help = "Set the tool probe that will act as the Z endstop."
+    cmd_SET_ACTIVE_TOOL_PROBE_help = (
+        "Set the tool probe that will act as the Z endstop (T=-1 clears selection).")
     def cmd_SET_ACTIVE_TOOL_PROBE(self, gcmd):
         probe_nr = gcmd.get_int("T")
+        if probe_nr == -1:
+            self.set_active_probe(None)
+            return
         if (probe_nr not in self.tool_probes):
             raise gcmd.error("SET_ACTIVE_TOOL_PROBE no tool probe for tool %d" % (probe_nr))
         self.set_active_probe(self.tool_probes[probe_nr])
@@ -178,7 +241,7 @@ class ToolProbeEndstop:
         self.cmd_DETECT_ACTIVE_TOOL_PROBE(gcmd)
         expected_tool_number = gcmd.get_int("T", self.active_tool_number)
 
-        if expected_tool_number is None:
+        if expected_tool_number is None or expected_tool_number < 0:
             raise gcmd.error("Cannot start probe crash detection - no active tool")
         if expected_tool_number != self.active_tool_number:
             raise gcmd.error("Cannot start probe crash detection - expected tool not active")

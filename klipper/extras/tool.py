@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+import logging
+
 from . import toolchanger
 
 class Tool:
@@ -40,11 +42,17 @@ class Tool:
         self.params = {**self.toolchanger.params, **toolchanger.get_params_dict(config)}
         self.original_params = {}
         self.extruder_name = self._config_get(config, 'extruder', None)
+
         self.detect_state       = toolchanger.DETECT_UNAVAILABLE
         self.flip_detect_state  = True
+        # NOTE: there probably is some really obscure case where extruder and detect pin aren't on the same MCU 
+        # and this logic becomes flawed, but at that point theres something else really wrong with you
+        self.detect_mcu         = None
+        self.is_disconnected    = False
         _detect_pin_name = config.get('detection_pin', None)
         if _detect_pin_name:
             self._register_button(config, _detect_pin_name)
+            
         self.extruder_stepper_name = self._config_get(config, 'extruder_stepper', None)
         self.extruder = None
         self.extruder_stepper = None
@@ -76,6 +84,8 @@ class Tool:
                       self.printer.lookup_object("fan_generic " + self.fan_name))
         if self.tool_number >= 0:
             self.assign_tool(self.tool_number)
+        if getattr(self.detect_mcu, "non_critical_disconnected", False):
+            self.is_disconnected = True
 
     def _handle_detect(self, eventtime, is_triggered):
         _state = self.flip_detect_state ^ is_triggered
@@ -87,46 +97,72 @@ class Tool:
     def _register_button(self, config, detect_pin_name):
         ppins = self.printer.lookup_object('pins')
         p = ppins.parse_pin(detect_pin_name, can_invert=True, can_pullup=True)
+        detect_mcu = p.get('chip', None)
+        self.detect_mcu = detect_mcu
+        requested_pull = p.get('pullup', 0)
         base = f"{p['chip_name']}:{p['pin']}"
         ppins.allow_multi_use_pin(base)
         prev = ppins.active_pins.get(base)
-        if prev is None: # If were first, register non inverted.
+        # If first, stay "neutral" (noninverted). Otherwise reuse existing polarity.
+        if prev is None:
             actual_inv  = 0
-            actual_pull = p.get('pullup', 0)
-        else: # if were not. respect the previous one.
+            actual_pull = requested_pull
+        else:
             actual_inv  = prev.get('invert', 0)
             actual_pull = prev.get('pullup', 0)
+            if bool(p.get('invert', 0)) != actual_inv or requested_pull != actual_pull:
+                logging.info("Reusing detection pin %s for %s with invert=%s pullup=%s (requested invert=%s pullup=%s)",
+                    base, self.name, actual_inv, actual_pull, bool(p.get('invert', 0)), requested_pull)
         dec = ''
         if   actual_pull == 1:  dec += '^'
         elif actual_pull == -1: dec += '~'
         if actual_inv:          dec += '!'
         reg = f"{dec}{base}"
         buttons = self.printer.load_object(config, 'buttons')
-        buttons.register_buttons([reg], self._handle_detect)
+        def _btn_handler(eventtime, is_triggered, mcu=detect_mcu):
+            if getattr(mcu, "non_critical_disconnected", False):
+                # Ignore events while the MCU is offline; state handled via events below
+                return
+            self._handle_detect(eventtime, is_triggered)
+
+        buttons.register_buttons([reg], _btn_handler)
         self.flip_detect_state = config.getboolean('flip_detect', False) ^ bool(actual_inv) ^ bool(p.get('invert', 0))
         self.detect_state = (toolchanger.DETECT_PRESENT if self.flip_detect_state else toolchanger.DETECT_ABSENT)
 
+        # Track non-critical disconnect/reconnect explicitly
+        if detect_mcu and hasattr(detect_mcu, "get_non_critical_disconnect_event_name"):
+            def _on_disc():
+                self.detect_state = toolchanger.DETECT_UNAVAILABLE
+                self.is_disconnected = True
+            def _on_recon():
+                # Restore baseline state; actual detection follows on next edge
+                self.detect_state = (toolchanger.DETECT_PRESENT
+                                     if self.flip_detect_state
+                                     else toolchanger.DETECT_ABSENT)
+                self.is_disconnected = False
+            self.printer.register_event_handler(detect_mcu.get_non_critical_disconnect_event_name(), _on_disc)
+            self.printer.register_event_handler(detect_mcu.get_non_critical_reconnect_event_name(),  _on_recon)
+
 
     def get_status(self, eventtime):
-        return {**self.params,
-                'name': self.name,
-                'toolchanger': self.toolchanger.name,
-                'tool_number': self.tool_number,
-                'extruder': self.extruder_name,
-                'extruder_stepper': self.extruder_stepper_name,
-                'fan': self.fan_name,
-                'active': self.main_toolchanger.get_selected_tool() == self,
-                'gcode_x_offset': self.gcode_x_offset if self.gcode_x_offset else 0.0,
-                'gcode_y_offset': self.gcode_y_offset if self.gcode_y_offset else 0.0,
-                'gcode_z_offset': self.gcode_z_offset if self.gcode_z_offset else 0.0,
-                }
+        s = {**self.params,
+            'name': self.name,
+            'toolchanger': self.toolchanger.name,
+            'tool_number': self.tool_number,
+            'extruder': self.extruder_name,
+            'extruder_stepper': self.extruder_stepper_name,
+            'fan': self.fan_name,
+            'active': self.main_toolchanger.get_selected_tool() == self,
+            'gcode_x_offset': self.gcode_x_offset or 0.0,
+            'gcode_y_offset': self.gcode_y_offset or 0.0,
+            'gcode_z_offset': self.gcode_z_offset or 0.0,
+        }
+        if self.detect_mcu and hasattr(self.detect_mcu, "get_non_critical_disconnect_event_name"):
+            s['is_disconnected'] = self.is_disconnected
+        return s
 
     def get_offset(self):
-        return [
-            self.gcode_x_offset if self.gcode_x_offset else 0.0,
-            self.gcode_y_offset if self.gcode_y_offset else 0.0,
-            self.gcode_z_offset if self.gcode_z_offset else 0.0,
-        ]
+        return [self.gcode_x_offset, self.gcode_y_offset, self.gcode_z_offset]
 
     cmd_ASSIGN_TOOL_help = 'Assign tool to tool number'
     def cmd_ASSIGN_TOOL(self, gcmd):

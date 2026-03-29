@@ -15,6 +15,14 @@ To install this plugin, run the installation script using the following command 
 ```commandline
 wget -O - https://raw.githubusercontent.com/Contomo/klipper-toolchanger-hard/main/install.sh | bash
 ```
+Add the [macros.cfg](/macros.cfg) to your printer config.
+
+## Changelog
+
+* 2026.02.05 - planned obsolescence of tool_probe_endstop
+* 2025.12.26 - **Breaking change** Stop using G-code offsets for tool offsets. Uses a dedicated gcode transform instead. Hopefully making the code more robust.
+* 2025.12.25 - Use Bezier curves for rounded paths.
+* 2025.12.25 - Manual rail update to latest Klipper.
 
 ## Updates that add new files
 
@@ -29,6 +37,7 @@ bash ~/klipper-toolchanger/install.sh
 
 * [Toolchanger](docs/toolchanger.md) - tool management support.
 * [Tool probe](docs/tool_probe.md) - per tool Z probe.
+* [Probe multiplexer](docs/probe_multiplexer.md) - route multiple probes through one logical probe.
 * [Rounded path](docs/rounded_path.md) - rounds the travel path corners for fast non-print moves.
 * [Tools calibrate](docs/tools_calibrate.md) - support for contact based XYZ offset calibration probes.
 
@@ -38,3 +47,68 @@ bash ~/klipper-toolchanger/install.sh
 * [Sensorless auto tune](docs/sensorless_auto_tune.md) - automatically determines SGT/SGTHR values for your G28
 * [Tool drop detection](docs/tool_drop_detection.md) - continous polling of accelerometers, with peak/angle detection (tool dropped)
 * [Heater chamber fan](docs/heater_chamber_fan.md) - like a temperature_fan but it heats. automated chamber filter fan using bed as heater.
+
+## Migrating from KTC-Easy to KTC-H
+
+Download & Save a backup of your current configuration.   
+
+Uninstall KTC-E and install KTC-H.  
+```commandline
+sudo rm -r ~/klipper-toolchanger-easy
+```
+```commandline
+wget -O - https://raw.githubusercontent.com/Contomo/klipper-toolchanger-hard/main/install.sh | bash
+```
+
+
+In Mainsail, delete everything in the toolchanger folder. Don't delete any Tool configs and toolchanger-config.cfg if those happen to be in here.   
+Restore the readonly-configs from the KTC-E GitHub by putting them in the toolchanger folder.   
+You can find them here:
+```commandline
+https://github.com/jwellman80/klipper-toolchanger-easy/tree/main/examples/easy-additions
+```
+from /user-configs, ONLY download toolchanger-include.cfg for TAP setups. toolchanger-include_scanner.cfg for scanners. 
+```commandline
+https://github.com/jwellman80/klipper-toolchanger-easy/tree/main/examples/easy-additions/user-configs
+```
+
+Set up your files like so:
+```commandline
+├── toolchanger/
+│   ├── homing.cfg				 	 # from easy-additions folder
+│   ├── tool_detection.cfg     	 # for TAP install
+│   ├── toolchanger.cfg
+│   ├── toolchanger-macros.cfg
+│   ├── calibrate-offsets.cfg
+│   ├── crash-detection.cfg
+│   └── toolchanger-include.cfg
+├── tools/                   	 # Tool-specific configurations
+│   ├── T0.cfg          			 # More tools as needed
+│   └── T1.cfg
+└── toolchanger-config.cfg		 # User-editable overrides
+└── printer.cfg      				 # your other CFGs are also here 
+```
+
+
+Edit the toolchanger-include.cfg to include your tools, for example: 
+```commandline
+[include ../tools/T0.cfg]
+[include ../tools/T1.cfg]
+```
+
+Now your toolchanger-include.cfg will include all of the .cfgs :)
+
+
+Edit your include in printer.cfg:  
+FROM: 
+```commandline
+[include toolchanger/readonly-configs/toolchanger-include.cfg]
+```
+TO:   
+```commandline
+[include toolchanger/toolchanger-include.cfg]
+```
+
+In tool_detection.cfg, comment out the macros INITIALIZE_TOOLCHANGER, _INITIALIZE_FROM_DETECTED_TOOL, _INITIALIZE_FROM_DETECTED_TOOL_IMPL, VERIFY_TOOL_DETECTED.  
+
+All done! :)

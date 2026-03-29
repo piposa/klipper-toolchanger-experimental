@@ -1,6 +1,8 @@
 # rounded paths for fast travel.
 #
-# Copyright (C) 2023  Viesturs Zarins <viesturz@gmail.com>
+# Copyright (C) 2025  Viesturs Zarins <viesturz@gmail.com>
+# Copyright (C) 2025  Ingo Donasch <ingo@donasch.net>
+# Copyright (C) 2026  Eric Billmeyer <eric.billmeyer@freenet.de>
 
 # Aimed to optimize travel paths by minimizing speed changes for sharp corners.
 # Supports arbitrary paths in XYZ.
@@ -11,7 +13,8 @@
 
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
-EPSILON = 0.001
+import logging
+EPSILON = 1e-9
 EPSILON_ANGLE = 0.001
 
 try:
@@ -92,9 +95,10 @@ class RoundedPath:
     buffer: list[ControlPoint]
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.mm_per_arc_segment = config.getfloat('resolution', 1., above=0.0)
-        self.algorithm          = config.getchoice('algorithm', self._ALGO_MAP, 'bezier')
-        self.reset_on_mismatch  = config.getboolean('reset_on_mismatch', True)
+        self.mm_per_arc_segment   = config.getfloat('resolution', 1.0, above=0.0)
+        self.angle_resolution_deg = config.getfloat('angle_resolution', 1.0, above=0.0, maxval=180.0)
+        self.log                  = config.getboolean('logging', False)
+        self.algorithm            = config.getchoice('algorithm', self._ALGO_MAP, 'bezier')
         if self.algorithm == 'bezier' and np is None:
             raise config.error("Choice 'bezier' for option 'algorithm' in section 'rounded_path' requires 'numpy' to be installed." \
                                 "(install numpy or switch to fillet)")
@@ -111,6 +115,11 @@ class RoundedPath:
             self.gcode.register_command("G0", None)
             self.gcode.register_command("G0", self.cmd_ROUNDED_G0)
 
+        self.printer.register_event_handler("gcode:command_error", self._handle_command_error)
+
+    def _handle_command_error(self):
+        self.buffer = []
+
     def cmd_ROUNDED_G0(self, gcmd):
         d = gcmd.get_float("D", 0.0)
         if d <= 0.0 and len(self.buffer) < 2:
@@ -126,8 +135,6 @@ class RoundedPath:
         else:
             origin = self.buffer[0].vec
             if _vdist(currentPos, origin) > EPSILON:
-                if self.reset_on_mismatch:
-                    self.buffer.clear()
                 raise gcmd.error("ROUNDED_G0 - current position changed since previous command, the last ROUNDED_G0 before other moves needs to be with D=0")
             last = self.buffer[-1]
             currentPos = last.vec
@@ -187,7 +194,7 @@ class RoundedPath:
         self._deconflict_lin_d(num_segments+1)
 
         for i in range(num_segments):
-            self._arc(self.buffer[i+1], self.buffer[i],self.buffer[i+2])
+            self._arc(self.buffer[i+1], self.buffer[i], self.buffer[i+2])
 
         self.buffer = self.buffer[num_segments:]
         # Update where we finished
@@ -236,10 +243,25 @@ class RoundedPath:
 
     def _arc_fillet(self, c: ControlPoint, p: ControlPoint, n: ControlPoint):
         radius = c.lin_d * c.lin_d_to_r
-        num_segments = math.floor(radius * c.angle / self.mm_per_arc_segment)
-        if num_segments < 1:
+        angle = abs(c.angle)
+        if angle <= EPSILON or radius <= EPSILON:
             self._g0(c)
             return
+        path_length = radius * angle
+        angle_step = math.radians(self.angle_resolution_deg)
+        angle_segments = max(1, math.ceil(angle / angle_step))
+        max_length_segments = max(1, math.floor(path_length / self.mm_per_arc_segment))
+        if angle_segments <= max_length_segments:
+            num_segments = angle_segments
+        else:
+            num_segments = max_length_segments
+        if self.log:
+            logging.info(
+                "rounded_path fillet: angle=%.3fdeg radius=%.4f mm segments=%d "
+                "(angle_segments=%d length_limit=%d)",
+                math.degrees(angle), radius, num_segments,
+                angle_segments, max_length_segments,
+            )
         vp = _vnorm(_vecto(c, p))
         vn = _vnorm(_vecto(c, n))
         rotaxis = _vnorm(_cross(vp, vn))
@@ -259,10 +281,18 @@ class RoundedPath:
         if np is None:
             raise RuntimeError("NumPy is required for bezier algorithm")
         radius = c.lin_d * c.lin_d_to_r
-        num_segments = math.floor(radius * c.angle / self.mm_per_arc_segment)
-        if num_segments < 1:
+        angle = abs(c.angle)
+        if angle <= EPSILON or radius <= EPSILON:
             self._g0(c)
             return
+        path_length = radius * angle
+        angle_step = math.radians(self.angle_resolution_deg)
+        angle_segments = max(1, math.ceil(angle / angle_step))
+        max_length_segments = max(1, math.floor(path_length / self.mm_per_arc_segment))
+        if angle_segments <= max_length_segments:
+            num_segments = angle_segments
+        else:
+            num_segments = max_length_segments
         vp = _vnorm(_vecto(c, p))
         vn = _vnorm(_vecto(c, n))
         rotaxis = _vnorm(_cross(vp, vn))
@@ -276,7 +306,16 @@ class RoundedPath:
         np_p = np.array(vp) * c.lin_d  # previous tangential point (vector from c)
         np_c = np.array(c.vec)         # corner itself
         straight_len = math.hypot(*(np_n - np_p))
-        n_pts = max(2, math.trunc(straight_len / self.mm_per_arc_segment))
+        straight_segments = max(1, math.floor(straight_len / self.mm_per_arc_segment))
+        if self.log:
+            logging.info(
+                "rounded_path bezier: angle=%.3fdeg radius=%.4f mm segments=%d "
+                "(angle_segments=%d length_limit=%d straight_limit=%d)",
+                math.degrees(angle), radius, num_segments,
+                angle_segments, max_length_segments, straight_segments,
+            )
+        # Cap bezier sampling to the chosen segment count to avoid excessive points
+        n_pts = max(2, num_segments + 1)
         bcurve = _Bezier.bezier_curve([np_p + np_c, np_c, np_n + np_c], n=n_pts)
 
         # Emit: first move to entry tangent, then follow Bezier in reverse so
@@ -289,6 +328,9 @@ class RoundedPath:
         self._g0p(p, p.vec)
 
     def _g0p(self, p: ControlPoint, vec: list):
+        # ignore extremely short residual misalignements that may collapse lookahead junction velocity on otherwise smooth paths.
+        if self.lastg0 and _vdist(self.lastg0, vec) <= 0.001:
+            return
         self.G0_params["X"]=vec[0]
         self.G0_params["Y"]=vec[1]
         self.G0_params["Z"]=vec[2]

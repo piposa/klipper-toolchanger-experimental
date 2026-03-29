@@ -3,6 +3,7 @@
 # Copyright (C) 2023 Viesturs Zarins <viesturz@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import inspect
 from . import probe
 
 if not all(hasattr(probe, attr) for attr in (
@@ -25,6 +26,8 @@ class ToolProbeEndstop:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.name = config.get_name()
+        if not config.fileconfig.has_option(self.name, "z_offset"):
+            config.fileconfig.set(self.name, "z_offset", "0.0")
         self.tool_probes = {}
         self.last_query = {} # map from tool number to endstop state
         self.active_probe = None
@@ -33,8 +36,13 @@ class ToolProbeEndstop:
         self.crash_detection_active = False
         self.crash_lasttime = 0.
         self.mcu_probe = EndstopRouter(self.printer)
+        self.probe_offsets = probe.ProbeOffsetsHelper(config)
         self.param_helper = probe.ProbeParameterHelper(config)
-        self.homing_helper = probe.HomingViaProbeHelper(config, self.mcu_probe, self.param_helper)
+
+        self.homing_helper = self._build_homing_helper(
+            config, self.mcu_probe, self.probe_offsets, self.param_helper
+        )
+        
         self.probe_session = probe.ProbeSessionHelper(config, self.param_helper, self.homing_helper.start_probe_session)
         self.cmd_helper = probe.ProbeCommandHelper(config, self, self.mcu_probe.query_endstop)
         self._active_session = None
@@ -59,11 +67,23 @@ class ToolProbeEndstop:
         self.gcode.register_command('STOP_TOOL_PROBE_CRASH_DETECTION', self.cmd_STOP_TOOL_PROBE_CRASH_DETECTION,
                                     desc=self.cmd_STOP_TOOL_PROBE_CRASH_DETECTION_help)
 
+    def _build_homing_helper(self, config, mcu_probe, probe_offsets, param_helper):
+        try:
+            sig = inspect.signature(probe.HomingViaProbeHelper.__init__)
+            params = list(sig.parameters.values())
+            if len(params) >= 5:
+                return probe.HomingViaProbeHelper(
+                    config, mcu_probe, probe_offsets, param_helper
+                )
+        except Exception:
+            pass
+        return probe.HomingViaProbeHelper(config, mcu_probe, param_helper)
+
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self._detect_active_tool()
 
-    def get_offsets(self):
+    def get_offsets(self, gcmd=None):
         if self.active_probe:
             return self.active_probe.get_offsets()
         return 0.0, 0.0, 0.0
@@ -101,7 +121,15 @@ class ToolProbeEndstop:
             self._active_session = self.active_probe.start_probe_session(gcmd)
         return self._active_session
 
-    def run_probe(self, gcmd):
+    def run_probe(self, gcmd, retry_session=None):
+        if self.active_probe and hasattr(self.active_probe, "run_probe"):
+            try:
+                sig = inspect.signature(self.active_probe.run_probe)
+                if len(sig.parameters) >= 3:
+                    return self.active_probe.run_probe(gcmd, retry_session)
+            except Exception:
+                pass
+            return self.active_probe.run_probe(gcmd)
         session = self._get_session(gcmd)
         session.run_probe(gcmd)
         results = session.pull_probed_results()
@@ -134,6 +162,7 @@ class ToolProbeEndstop:
             self.mcu_probe.set_active_mcu(None)
             self.active_tool_number = -1
             self.cmd_helper.name = self.name
+        self.probe_offsets.x_offset, self.probe_offsets.y_offset, self.probe_offsets.z_offset = self.get_offsets()
         self._active_session = None
 
     def _query_open_tools(self, tool_number=None):
@@ -229,9 +258,13 @@ class ToolProbeEndstop:
         status['active_tool_number'] = self.active_tool_number
         if self.active_probe:
             status['active_tool_probe'] = self.active_probe.name
+            status['active_tool_probe_x_offset'] = self.active_probe.get_offsets()[0]
+            status['active_tool_probe_y_offset'] = self.active_probe.get_offsets()[1]
             status['active_tool_probe_z_offset'] = self.active_probe.get_offsets()[2]
         else:
             status['active_tool_probe'] = None
+            status['active_tool_probe_x_offset'] = 0.0
+            status['active_tool_probe_y_offset'] = 0.0
             status['active_tool_probe_z_offset'] = 0.0
         return status
 

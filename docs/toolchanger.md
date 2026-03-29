@@ -40,7 +40,10 @@ Any parameter that can be set on a tool can also be set here and becomes the def
 initialize_on: <manual|home|first-use>    # default: first-use
 initialize_gcode: <template>
 verify_tool_pickup: <True|False>          # default: True
+ignore_detect_probing_events: <True|False>  # default: True
 require_tool_present: <True|False>        # default: False
+abort_on_tool_missing: <True|False>       # default: False
+tool_missing_delay: <seconds>             # default: 2.0
 uses_axis: <xyz>                          # default: xyz
 on_axis_not_homed: <abort|home>           # default: abort
 perform_restore_move: <True|False>        # default: True
@@ -77,6 +80,9 @@ gcode_z_offset: <mm>
 # Most templates from [toolchanger] can be overridden here.
 params_*: <python literal>                # overrides inherited parameters
 ```
+
+Tool G-code offsets are applied independently from user G-code offsets.
+User G-code offsets are preserved across tool changes.
 
 ---
 
@@ -209,13 +215,29 @@ SET_TOOL_TEMPERATURE [T=<n>] TARGET=<temp> [WAIT=0]
 
 Sets tool temperature.
 
+### `ENTER_DOCKING_MODE`
+
+```
+ENTER_DOCKING_MODE
+```
+
+Manually enters docking mode, clearing tool and G-code offsets. Primarily for dock alignment.
+
+### `EXIT_DOCKING_MODE`
+
+```
+EXIT_DOCKING_MODE
+```
+
+Exits manual docking mode.
+
 ### `TEST_TOOL_DOCKING`
 
 ```
 TEST_TOOL_DOCKING
 ```
 
-Docks and undocks the current tool.
+Docks and undocks the current tool. Requires docking mode.
 
 ### `SET_TOOL_PARAMETER`
 

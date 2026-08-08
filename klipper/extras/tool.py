@@ -8,8 +8,51 @@ import logging
 
 from . import toolchanger
 
-class Tool:
+from typing import Optional
 
+class ToolFilamentTracker:
+    """Tracks filament usage for a specific tools extruder"""
+
+    def __init__(self, tool: 'Tool') -> None:
+        self.tool = tool
+        self._filament_used: float = 0.0
+        self._last_e_pos: Optional[float] = None
+        self.tool.printer.register_event_handler(
+            "extruder:activate_extruder",
+            self._update_filament_used,
+        )
+
+    def _get_cur_e_pos(self) -> Optional[float]:
+        extruder = self.tool.extruder
+        if extruder is None:
+            return None
+        last = extruder.last_position
+        if isinstance(last, (int, float)):
+            return float(last)
+        
+        if isinstance(last, (list, tuple)): # KALICO!?
+            return sum(last)
+
+    def _update_filament_used(self) -> None:
+        e_pos = self._get_cur_e_pos()
+        if e_pos is None:
+            self._last_e_pos = None
+            return
+
+        last_e_pos, self._last_e_pos = self._last_e_pos, e_pos
+
+        if last_e_pos is not None:
+            self._filament_used += e_pos - last_e_pos
+
+    def get_filament_used(self) -> float:
+        self._update_filament_used()
+        return self._filament_used
+
+    def reset_filament_used(self) -> None:
+        self._filament_used = 0.0
+        self._last_e_pos = self._get_cur_e_pos()
+
+class Tool:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.params = config.get_prefix_options('params_')
@@ -41,7 +84,9 @@ class Tool:
             config, 'gcode_z_offset', 0.0)
         self.params = {**self.toolchanger.params, **toolchanger.get_params_dict(config)}
         self.original_params = {}
-        self.extruder_name = self._config_get(config, 'extruder', None)
+        self.extruder_name      = self._config_get(config, 'extruder', None)
+        self.heater_name        = self._config_get(config, 'heater', None)
+        self.filament_tracker   = ToolFilamentTracker(self) if self.extruder_name else None
 
         self.detect_state       = toolchanger.DETECT_UNAVAILABLE
         self.flip_detect_state  = True
@@ -52,9 +97,10 @@ class Tool:
         _detect_pin_name = config.get('detection_pin', None)
         if _detect_pin_name:
             self._register_button(config, _detect_pin_name)
-            
+
         self.extruder_stepper_name = self._config_get(config, 'extruder_stepper', None)
         self.extruder = None
+        self.heater = None
         self.extruder_stepper = None
         self.fan_name = self._config_get(config, 'fan', None)
         self.fan = None
@@ -65,6 +111,8 @@ class Tool:
         self.perform_restore_move = self._config_getboolean(
             config, 'perform_restore_move', True)
         self.tool_number = config.getint('tool_number', -1, minval=0)
+        if self.tool_number >= 0:
+            self.assign_tool(self.tool_number)
 
         gcode = self.printer.lookup_object('gcode')
         gcode.register_mux_command("ASSIGN_TOOL", "TOOL", self.name,
@@ -74,16 +122,26 @@ class Tool:
         self.printer.register_event_handler("klippy:connect",
                                     self._handle_connect)
 
+    def __str__(self):
+        return self.name
+
     def _handle_connect(self):
         self.extruder = self.printer.lookup_object(
             self.extruder_name) if self.extruder_name else None
         self.extruder_stepper = self.printer.lookup_object(
             self.extruder_stepper_name) if self.extruder_stepper_name else None
+        if self.heater_name:
+            self.heater = self.printer.lookup_object(self.heater_name)
+        elif self.extruder:
+            self.heater = self.extruder.get_heater()
+            self.heater_name = self.extruder_name
         if self.fan_name:
             self.fan = self.printer.lookup_object(self.fan_name,
                       self.printer.lookup_object("fan_generic " + self.fan_name))
+        # Register T commands for initial tool assignments after config parsing
+        # finishes, so user-defined Tn macros are not shadowed mid-parse.
         if self.tool_number >= 0:
-            self.assign_tool(self.tool_number)
+            self.register_t_gcode(self.tool_number)
         if getattr(self.detect_mcu, "non_critical_disconnected", False):
             self.is_disconnected = True
 
@@ -147,14 +205,17 @@ class Tool:
         s = {**self.params,
             'name': self.name,
             'toolchanger': self.toolchanger.name,
+            'detect_state': self.detect_state,
             'tool_number': self.tool_number,
             'extruder': self.extruder_name,
+            'heater': self.heater_name,
             'extruder_stepper': self.extruder_stepper_name,
             'fan': self.fan_name,
             'active': self.main_toolchanger.get_selected_tool() == self,
             'gcode_x_offset': self.gcode_x_offset or 0.0,
             'gcode_y_offset': self.gcode_y_offset or 0.0,
             'gcode_z_offset': self.gcode_z_offset or 0.0,
+            'filament_used': self.filament_tracker.get_filament_used() if self.filament_tracker is not None else 0.0,
         }
         if self.detect_mcu and hasattr(self.detect_mcu, "get_non_critical_disconnect_event_name"):
             s['is_disconnected'] = self.is_disconnected
@@ -171,7 +232,10 @@ class Tool:
         prev_number = self.tool_number
         self.tool_number = number
         self.main_toolchanger.assign_tool(self, number, prev_number, replace)
-        self.register_t_gcode(number)
+        # Runtime reassignment should update Tn mapping immediately.
+        # Initial registration is delayed to _handle_connect.
+        if replace:
+            self.register_t_gcode(number)
 
     def register_t_gcode(self, number):
         gcode = self.printer.lookup_object('gcode')
@@ -203,6 +267,7 @@ class Tool:
                     "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE='%s'" % (self.extruder_stepper_name, hotend_extruder, ))
         if self.fan:
             self.toolchanger.fan_switcher.activate_fan(self.fan)
+
     def deactivate(self):
         if self.extruder_stepper:
             toolhead = self.printer.lookup_object('toolhead')
@@ -213,8 +278,10 @@ class Tool:
 
     def _config_get(self, config, name, default_value):
         return config.get(name, self.toolchanger.config.get(name, default_value))
+
     def _config_getfloat(self, config, name, default_value):
         return config.getfloat(name, self.toolchanger.config.getfloat(name, default_value))
+
     def _config_getboolean(self, config, name, default_value):
         return config.getboolean(name, self.toolchanger.config.getboolean(name, default_value))
 

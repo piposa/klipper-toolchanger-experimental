@@ -92,14 +92,26 @@ class ManualRail:
         endstops = self.rail.get_endstops()
         phoming = self.printer.lookup_object('homing')
         pos = [hi.position_endstop, 0., 0., 0.]
-        phoming.manual_home(self, endstops, pos, hi.speed, True, True)
+        phoming.manual_home(toolhead=self,
+                            endstops=endstops,
+                            pos=pos,
+                            speed=hi.speed,
+                            probe_pos=False,
+                            triggered=True,
+                            check_triggered=True)
         # second homing pass
         if hi.retract_dist:
             retract_dir = -1.0 if hi.positive_dir else 1.0
             retract_pos = hi.position_endstop + retract_dir * hi.retract_dist
             self.do_move(retract_pos, hi.retract_speed, accel)
             self.do_set_position(hi.position_endstop + retract_dir * hi.retract_dist * 1.5)
-            phoming.manual_home(self, endstops, pos, hi.second_homing_speed, True, True)
+            phoming.manual_home(toolhead=self,
+                                endstops=endstops,
+                                pos=pos,
+                                speed=hi.second_homing_speed,
+                                probe_pos=False,
+                                triggered=True,
+                                check_triggered=True)
 
     cmd_MANUAL_RAIL_help = "Command a manually configured rail"
     def cmd_MANUAL_RAIL(self, gcmd):
